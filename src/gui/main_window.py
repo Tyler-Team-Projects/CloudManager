@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
     QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar
 )
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 
 # Добавляем путь к корню проекта
@@ -412,7 +412,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось создать папку: {e}")
 
     def _on_upload(self) -> None:
-        """Загрузка файлов."""
+        """Асинхронная загрузка файлов на диск (в облако)."""
+        if self._current_path == "mounts://":
+            QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
+            return
+
         if not self._current_provider:
             return
 
@@ -420,24 +424,79 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        progress = ProgressDialog("Загрузка файлов", self)
-        progress.set_cancellable(False)
-        progress.show()
+        self._upload_queue = [Path(f) for f in files]
+        self._upload_success = 0
+        self._upload_total = len(self._upload_queue)
+        self._upload_provider = self._current_provider  # фиксируем провайдера
 
-        success_count = 0
-        for i, file_path in enumerate(files):
-            remote_path = self._current_path.rstrip('/') + '/' + Path(file_path).name
-            progress.set_status(f"Загрузка: {Path(file_path).name}", f"{i+1} из {len(files)}")
+        if self._upload_queue:
+            self.status_bar.showMessage(f"Загрузка 0 из {self._upload_total}...")
+            self._upload_next()
 
-            try:
-                self._current_provider.upload_file(file_path, remote_path)
-                success_count += 1
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось загрузить {file_path}: {e}")
+    def _upload_next(self) -> None:
+        """Обработка очереди загрузки – запуск следующего файла."""
+        if not self._upload_queue:
+            # Показываем итоговое сообщение
+            self.status_bar.showMessage(
+                f"Загружено {self._upload_success} из {self._upload_total} файлов"
+            )
+            # Через 10 секунд обновим таблицу и очистим статус-бар
+            QTimer.singleShot(10000, self._finish_upload)
+            return
 
-        progress.operation_finished(True)
-        self.status_bar.showMessage(f"Загружено {success_count} из {len(files)} файлов")
+        local_path = self._upload_queue[0]
+        file_name = local_path.name
+        current = self._upload_success + 1
+        remote_path = self._current_path.rstrip('/') + '/' + file_name
+
+        self.status_bar.showMessage(
+            f"Загрузка: {file_name} ({current} из {self._upload_total})"
+        )
+
+        self._upload_worker = UploadWorker(
+            self._upload_provider,
+            local_path,
+            remote_path
+        )
+        self._upload_worker.progress.connect(self._on_upload_progress)
+        self._upload_worker.finished.connect(self._on_upload_finished)
+        self._upload_worker.error.connect(self._on_upload_error)
+        self._upload_worker.start()
+
+    def _finish_upload(self) -> None:
+        """Завершение процесса загрузки: обновление таблицы и очистка статус-бара."""
         self._on_refresh()
+        self.status_bar.clearMessage()
+
+    def _on_upload_progress(self, current: int, total: int) -> None:
+        """Обновление прогресса загрузки."""
+        if total > 0:
+            current_mb = current / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            percent = int(current / total * 100)
+            file_name = self._upload_queue[0].name if self._upload_queue else ""
+            self.status_bar.showMessage(
+                f"Загрузка: {file_name} - {current_mb:.1f}/{total_mb:.1f} МБ ({percent}%)"
+            )
+        else:
+            current_mb = current / (1024 * 1024)
+            file_name = self._upload_queue[0].name if self._upload_queue else ""
+            self.status_bar.showMessage(f"Загрузка: {file_name} - {current_mb:.1f} МБ")
+
+    def _on_upload_finished(self, success: bool, remote_path: str) -> None:
+        """Файл успешно загружен."""
+        if self._upload_queue:
+            self._upload_queue.pop(0)
+        if success:
+            self._upload_success += 1
+        self._upload_next()
+
+    def _on_upload_error(self, error: str) -> None:
+        """Ошибка загрузки файла."""
+        print(f"[ERROR] Upload failed: {error}")
+        if self._upload_queue:
+            self._upload_queue.pop(0)  # пропускаем проблемный файл
+        self._upload_next()
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
@@ -467,6 +526,12 @@ class MainWindow(QMainWindow):
         else:
 
             QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
+
+        self._upload_queue = []
+        self._upload_success = 0
+        self._upload_total = 0
+        self._upload_provider = None
+
 
     def _on_download_progress(self, current: int, total: int) -> None:
         """Обновление прогресса."""
