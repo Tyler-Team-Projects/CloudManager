@@ -538,6 +538,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Скачивание 0 из {self._download_total}...")
             self._download_next()
         else:
+
             QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
 
         self._upload_queue = []
