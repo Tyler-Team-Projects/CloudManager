@@ -19,13 +19,8 @@ class CloudProviderAdapter(BaseCloudProvider):
         if not self._bridge.has_token():
             return []
 
-        # Сохраняем текущий путь
         old_path = self._bridge.current_path
-
-        # Нормализуем путь
-        clean_path = path
-        if clean_path == "" or clean_path == "/":
-            clean_path = "/"
+        clean_path = path if path else "/"
 
         self._bridge.current_path = clean_path
         items = self._bridge.list_directory()
@@ -35,16 +30,18 @@ class CloudProviderAdapter(BaseCloudProvider):
         for item in items:
             if item['name'].startswith('⚠️') or item['name'].startswith('Ошибка'):
                 continue
-
-            result.append(CloudFile(
+            cloud_file = CloudFile(
                 name=item['name'],
                 path=item['path'],
                 is_dir=item['is_dir'],
-                size=0 if item['is_dir'] else self._parse_size(item['size']),
-                modified_at=None,
+                size=item.get('size_bytes', 0),
+                modified_at=item.get('modified_at'),
                 mime_type=None,
-                file_id=item['path']
-            ))
+                file_id=item['path'],
+                is_downloaded=item.get('downloaded', False),
+                is_synced=item.get('synced', False)
+            )
+            result.append(cloud_file)
 
         return result
 
