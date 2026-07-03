@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
     QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar
 )
-from PyQt6.QtCore import Qt, QSize, QTimer
+from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
 
 # Добавляем путь к корню проекта
@@ -27,6 +27,7 @@ from .views.file_table import FileTableView
 from .views.address_bar import AddressBar
 from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker
 from .dialogs.progress_dialog import ProgressDialog
+from .dialogs.toast import ToastNotification
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
@@ -173,6 +174,12 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
 
+        # Настройки
+        settings_menu = menubar.addMenu("&Настройки")
+        settings_action = QAction("Параметры...", self)
+        settings_action.triggered.connect(self._on_settings)
+        settings_menu.addAction(settings_action)
+
     def _setup_toolbar(self) -> None:
         """Настройка панели инструментов."""
         self.toolbar = QToolBar("Панель инструментов")
@@ -217,6 +224,12 @@ class MainWindow(QMainWindow):
         self.toggle_view_btn.setChecked(False)
         self.toggle_view_btn.triggered.connect(self._toggle_view)
         self.toolbar.addAction(self.toggle_view_btn)
+
+    def _on_settings(self):
+        """Открыть окно настроек."""
+        from gui.dialogs.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -430,6 +443,7 @@ class MainWindow(QMainWindow):
         self._upload_provider = self._current_provider  # фиксируем провайдера
 
         if self._upload_queue:
+            self._upload_dest_path = self._current_path
             self.status_bar.showMessage(f"Загрузка 0 из {self._upload_total}...")
             self._upload_next()
 
@@ -440,7 +454,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 f"Загружено {self._upload_success} из {self._upload_total} файлов"
             )
-            # Через 10 секунд обновим таблицу и очистим статус-бар
+            self._notify_upload_complete()
             QTimer.singleShot(10000, self._finish_upload)
             return
 
@@ -817,7 +831,8 @@ class MainWindow(QMainWindow):
         if not self._download_queue:
             downloads_path = self._cloud_provider._bridge.downloads_path
             self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
-            self._on_refresh()
+            self._notify_download_complete()
+            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
         file_item = self._download_queue[0]
@@ -840,10 +855,10 @@ class MainWindow(QMainWindow):
 
     def _on_copy_files(self, items: list) -> None:
         """Копирование файлов (сохраняем в буфер)."""
-        print(f"DEBUG: _on_copy_files получил {len(items)} элементов")  # ← ДОБАВИТЬ
+        print(f"DEBUG: _on_copy_files получил {len(items)} элементов")
         self._clipboard = items
         for item in items:
-            print(f"  - {item.name}")  # ← ДОБАВИТЬ
+            print(f"  - {item.name}")
         self.status_bar.showMessage(f"Скопировано {len(items)} элементов")
 
     def _on_paste_files(self) -> None:
@@ -858,7 +873,6 @@ class MainWindow(QMainWindow):
 
         dest_path = self._current_path
 
-        from gui.dialogs.progress_dialog import ProgressDialog
         progress = ProgressDialog("Копирование файлов", self)
         progress.set_cancellable(False)
         progress.show()
@@ -889,3 +903,39 @@ class MainWindow(QMainWindow):
         progress.operation_finished(True)
         self.status_bar.showMessage(f"Скопировано {success_count} из {len(self._clipboard)} файлов")
         self._on_refresh()
+
+    def _can_show_notifications(self) -> bool:
+        """Проверяет, разрешены ли уведомления."""
+        settings = QSettings("TeamTyler", "CloudManager")
+        settings.sync()
+        return settings.value("show_notifications", True, type=bool)
+
+    def _notify_upload_complete(self):
+        """Уведомление о завершении загрузки на диск."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Загружено {self._upload_success} из {self._upload_total} файлов"
+        dest_path = getattr(self, '_upload_dest_path', '/')
+        toast = ToastNotification(
+            "Загрузка завершена",
+            msg,
+            "Открыть папку в облаке",
+            callback=lambda: self._navigate_to_provider('cloud', dest_path),
+            parent=self
+        )
+        toast.show_at_bottom_right()
+
+    def _notify_download_complete(self):
+        """Уведомление о завершении скачивания."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Скачано {self._download_success} из {self._download_total} файлов"
+        downloads_path = str(self._cloud_provider._bridge.downloads_path) if self._cloud_provider else ""
+        toast = ToastNotification(
+            "Скачивание завершено",
+            msg,
+            "Открыть папку Downloads",
+            callback=lambda: self._navigate_to_provider('local', downloads_path),
+            parent=self
+        )
+        toast.show_at_bottom_right()
