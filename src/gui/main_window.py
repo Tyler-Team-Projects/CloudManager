@@ -6,10 +6,14 @@ from typing import Optional, Dict
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter,
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
-    QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar
+    QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar,
+    QSystemTrayIcon, QDialog, QApplication
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from PyQt6.QtGui import (
+    QAction, QIcon, QKeySequence, QIcon, QPixmap,
+    QColor, QPainter, QFont
+)
 
 # Добавляем путь к корню проекта
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -28,6 +32,8 @@ from .views.address_bar import AddressBar
 from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker
 from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
+from .dialogs.close_confirm_dialog import CloseConfirmDialog
+
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
@@ -53,6 +59,8 @@ class MainWindow(QMainWindow):
         self._load_stylesheet()
         self._update_auth_status()
         self._update_sync_status()
+        self._tray_icon = None
+        self._setup_tray()
 
 
         # Начальная загрузка
@@ -146,7 +154,7 @@ class MainWindow(QMainWindow):
 
         exit_action = QAction("Выход", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._exit_app)
         file_menu.addAction(exit_action)
 
         account_menu = menubar.addMenu("&Аккаунт")
@@ -175,10 +183,37 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
         # Настройки
-        settings_menu = menubar.addMenu("&Настройки")
-        settings_action = QAction("Параметры...", self)
+        settings_action = QAction("Настройки", self)
         settings_action.triggered.connect(self._on_settings)
-        settings_menu.addAction(settings_action)
+        menubar.addAction(settings_action)
+    def _setup_tray(self):
+        """Настройка системного трея."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self._tray_icon = QSystemTrayIcon(self)
+
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(QColor("#1976d2"))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor("white"))
+        painter.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "C")
+        painter.end()
+        self._tray_icon.setIcon(QIcon(pixmap))
+
+        self._tray_icon.setToolTip("Cloud Manager")
+
+        tray_menu = QMenu()
+        restore_action = tray_menu.addAction("Открыть приложение")
+        restore_action.triggered.connect(self._restore_from_tray)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("Выход")
+        quit_action.triggered.connect(self._exit_app)
+
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
 
     def _setup_toolbar(self) -> None:
         """Настройка панели инструментов."""
@@ -224,6 +259,66 @@ class MainWindow(QMainWindow):
         self.toggle_view_btn.setChecked(False)
         self.toggle_view_btn.triggered.connect(self._toggle_view)
         self.toolbar.addAction(self.toggle_view_btn)
+
+    def _restore_from_tray(self):
+        """Восстановить окно из трея."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if self._tray_icon:
+            self._tray_icon.hide()
+
+    def _on_tray_activated(self, reason):
+        """Обработка активации иконки трея (двойной клик)."""
+        if reason in (QSystemTrayIcon.ActivationReason.DoubleClick,
+                        QSystemTrayIcon.ActivationReason.Trigger,):
+            self._restore_from_tray()
+
+    def _exit_app(self):
+        """Полный выход из приложения."""
+        if self._tray_icon:
+            self._tray_icon.hide()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        """Обработка закрытия окна (крестик)."""
+        settings = QSettings("TeamTyler", "DiscoHack")
+        behavior = settings.value("close_behavior", "ask")
+
+        if behavior == "tray":
+            if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+                self.hide()
+                self._tray_icon.show()
+                event.ignore()
+                return
+            else:
+                # Трей недоступен – просто выходим
+                self._exit_app()
+                event.accept()
+                return
+        elif behavior == "exit":
+            self._exit_app()
+            event.accept()
+            return
+        else:  # 'ask' – показать диалог
+            dialog = CloseConfirmDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                action = dialog.chosen_action()
+                if action == 'tray':
+                    if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+                        self.hide()
+                        self._tray_icon.show()
+                        event.ignore()
+                    else:
+                        self._exit_app()
+                        event.accept()
+                elif action == 'exit':
+                    self._exit_app()
+                    event.accept()
+                else:
+                    event.ignore()  # Отмена
+            else:
+                event.ignore()  # Отмена
 
     def _on_settings(self):
         """Открыть окно настроек."""
