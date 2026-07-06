@@ -20,35 +20,79 @@ class FileTableModel(QStandardItemModel):
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalHeaderLabels(["Имя", "Размер", "Тип"])
+        self.setHorizontalHeaderLabels(["Статус", "Имя", "Размер", "Тип"])
         self._items: List[CloudFile] = []
 
     def set_items(self, items: List[CloudFile]) -> None:
-        """Установка элементов."""
+        """Установка элементов с отображением статуса синхронизации."""
         self._items = items
         self.removeRows(0, self.rowCount())
 
         for item in items:
+            # --- КОЛОНКА 0: СТАТУС ---
+            status_item = QStandardItem()
+            status_item.setEditable(False)
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+
+            if item.is_dir:
+                # Для папок — пустая ячейка (иконка будет в колонке "Имя")
+                status_item.setIcon(QIcon())
+                status_item.setText("")
+                status_item.setToolTip("Папка")
+                status_item.setData("folder", Qt.ItemDataRole.UserRole + 1)
+            else:
+                is_downloaded = getattr(item, 'is_downloaded', False)
+                is_synced = getattr(item, 'is_synced', False)
+
+                if is_downloaded and is_synced:
+                    status_item.setIcon(QIcon())
+                    status_item.setText("✅")
+                    status_item.setToolTip("Синхронизирован ✓")
+                    status_item.setData("synced", Qt.ItemDataRole.UserRole + 1)
+                    status_item.setForeground(Qt.GlobalColor.green)
+                elif is_downloaded and not is_synced:
+                    status_item.setIcon(QIcon())
+                    status_item.setText("⚠️")
+                    status_item.setToolTip("Не синхронизирован! Требуется обновление")
+                    status_item.setData("outdated", Qt.ItemDataRole.UserRole + 1)
+                    status_item.setForeground(Qt.GlobalColor.darkYellow)
+                else:
+                    status_item.setIcon(QIcon())
+                    status_item.setText("⬇️")
+                    status_item.setToolTip("Не скачан локально")
+                    status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
+                    status_item.setForeground(Qt.GlobalColor.gray)
+
+            # --- КОЛОНКА 1: ИМЯ ---
             name_item = QStandardItem(item.name)
             name_item.setData(item, Qt.ItemDataRole.UserRole)
             name_item.setEditable(False)
 
             if item.is_dir:
                 name_item.setIcon(QIcon.fromTheme("folder"))
-                size_str = ""
-                type_str = "Папка"
             else:
                 name_item.setIcon(self._get_file_icon(item.name))
+
+            # --- КОЛОНКА 2: РАЗМЕР ---
+            if item.is_dir:
+                size_str = ""
+            else:
                 size_str = self._format_size(item.size)
-                type_str = item.mime_type or "Файл"
 
             size_item = QStandardItem(size_str)
             size_item.setEditable(False)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            # --- КОЛОНКА 3: ТИП ---
+            if item.is_dir:
+                type_str = "Папка"
+            else:
+                type_str = item.mime_type or "Файл"
 
             type_item = QStandardItem(type_str)
             type_item.setEditable(False)
 
-            self.appendRow([name_item, size_item, type_item])
+            self.appendRow([status_item, name_item, size_item, type_item])
 
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
@@ -89,6 +133,8 @@ class FileTableView(QWidget):
     file_double_clicked = pyqtSignal(CloudFile)
     delete_requested = pyqtSignal(list)
     download_requested = pyqtSignal(list)
+    update_requested = pyqtSignal(list)
+    sync_check_requested = pyqtSignal(list)
     rename_requested = pyqtSignal(object, str)
     copy_requested = pyqtSignal(list)
     paste_requested = pyqtSignal()
@@ -99,6 +145,7 @@ class FileTableView(QWidget):
         self._current_items: List[CloudFile] = []
         self._view_mode = "icons"
         self._current_display_path = ""
+        self._clipboard_items: List[CloudFile] = []
         self._setup_ui()
         self._setup_context_menu()
 
@@ -180,8 +227,15 @@ class FileTableView(QWidget):
         """Настройка контекстного меню."""
         self.context_menu = QMenu(self)
 
+        # Действия для файлов
         self.download_action = QAction(QIcon.fromTheme("document-save"), "Скачать", self)
         self.download_action.triggered.connect(self._on_download)
+
+        self.sync_action = QAction(QIcon.fromTheme("view-refresh"), "Проверить синхронизацию", self)
+        self.sync_action.triggered.connect(self._on_check_sync)
+
+        self.update_action = QAction(QIcon.fromTheme("document-save"), "Обновить локальную копию", self)
+        self.update_action.triggered.connect(self._on_update)
 
         self.rename_action = QAction(QIcon.fromTheme("edit-rename"), "Переименовать", self)
         self.rename_action.triggered.connect(self._on_rename)
@@ -200,6 +254,8 @@ class FileTableView(QWidget):
         self.delete_action.triggered.connect(self._on_delete)
 
         self.context_menu.addAction(self.download_action)
+        self.context_menu.addAction(self.sync_action)
+        self.context_menu.addAction(self.update_action)
         self.context_menu.addSeparator()
         self.context_menu.addAction(self.copy_action)
         self.context_menu.addAction(self.paste_action)
@@ -217,14 +273,36 @@ class FileTableView(QWidget):
             self._update_icon_view()
 
     def _update_icon_view(self) -> None:
-        """Обновить отображение иконок с миниатюрами."""
+        """Обновить отображение иконок со статусом синхронизации."""
         from core.local.local_provider import LocalFileSystemProvider
 
         self.icon_view.clear()
         for item in self._current_items:
-            list_item = QListWidgetItem(item.name)
+            list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, item)
 
+            # Формируем отображаемое имя с индикатором статуса
+            display_name = item.name
+
+            if not item.is_dir:
+                is_downloaded = getattr(item, 'is_downloaded', False)
+                is_synced = getattr(item, 'is_synced', False)
+
+                if is_downloaded and is_synced:
+                    display_name = "✅ " + display_name
+                    list_item.setToolTip(f"{item.name}\n✅ Синхронизирован")
+                elif is_downloaded and not is_synced:
+                    display_name = "⚠️ " + display_name
+                    list_item.setToolTip(f"{item.name}\n⚠️ Требуется обновление")
+                else:
+                    display_name = "⬇️ " + display_name
+                    list_item.setToolTip(f"{item.name}\n⬇️ Не скачан локально")
+            else:
+                list_item.setToolTip(f"{item.name}\n📁 Папка")
+
+            list_item.setText(display_name)
+
+            # Иконка
             if item.is_dir:
                 list_item.setIcon(QIcon.fromTheme("folder"))
             else:
@@ -243,9 +321,7 @@ class FileTableView(QWidget):
             # Добавляем размер под иконкой
             if not item.is_dir:
                 size_text = self._format_size(item.size)
-                list_item.setToolTip(f"{item.name}\nРазмер: {size_text}")
-            else:
-                list_item.setToolTip(f"{item.name}\nПапка")
+                list_item.setToolTip(f"{list_item.toolTip()}\nРазмер: {size_text}")
 
             self.icon_view.addItem(list_item)
 
@@ -302,20 +378,35 @@ class FileTableView(QWidget):
                 self.file_double_clicked.emit(item)
 
     def _show_context_menu(self, pos: QPoint) -> None:
-        """Показ контекстного меню."""
+        """Показ контекстного меню с динамическими опциями."""
         items = self.get_selected_items()
         has_selection = len(items) > 0
 
-        # Проверяем, находимся ли в mounts://
+        has_downloaded = any(getattr(item, 'is_downloaded', False) for item in items)
+        has_not_downloaded = any(not getattr(item, 'is_downloaded', False) for item in items)
+        has_outdated = any(
+            getattr(item, 'is_downloaded', False) and not getattr(item, 'is_synced', False) for item in items)
+        has_folder = any(item.is_dir for item in items)
+
         if self._is_mounts_root():
             self.download_action.setEnabled(False)
+            self.sync_action.setEnabled(False)
+            self.update_action.setEnabled(False)
             self.copy_action.setEnabled(False)
             self.paste_action.setEnabled(False)
             self.rename_action.setEnabled(False)
             self.delete_action.setEnabled(False)
         else:
             self.download_action.setEnabled(has_selection)
-            self.copy_action.setEnabled(has_selection)
+            self.download_action.setVisible(has_selection)
+
+            self.sync_action.setEnabled(has_selection and has_downloaded)
+            self.sync_action.setVisible(has_selection)
+
+            self.update_action.setEnabled(has_selection and has_outdated)
+            self.update_action.setVisible(has_selection)
+
+            self.copy_action.setEnabled(has_selection and not has_folder)
             self.paste_action.setEnabled(has_selection)
             self.rename_action.setEnabled(has_selection and len(items) == 1)
             self.delete_action.setEnabled(has_selection)
@@ -324,15 +415,44 @@ class FileTableView(QWidget):
             self.context_menu.exec(self.table_view.viewport().mapToGlobal(pos))
         else:
             self.context_menu.exec(self.icon_view.viewport().mapToGlobal(pos))
+
     def _on_download(self) -> None:
-        """Скачивание."""
+        """Скачивание выбранных файлов."""
         if self._is_mounts_root():
             print("Скачивание запрещено в mounts://")
             return
 
         items = self.get_selected_items()
-        if items:
-            self.download_requested.emit(items)
+        to_download = [item for item in items if not item.is_dir]
+        if to_download:
+            self.download_requested.emit(to_download)
+
+    def _on_check_sync(self) -> None:
+        """Проверка синхронизации выбранных файлов."""
+        if self._is_mounts_root():
+            print("Проверка синхронизации запрещена в mounts://")
+            return
+
+        items = self.get_selected_items()
+        # Фильтруем только скачанные файлы
+        to_check = [item for item in items if not item.is_dir and getattr(item, 'is_downloaded', False)]
+        if to_check:
+            self.sync_check_requested.emit(to_check)
+
+    def _on_update(self) -> None:
+        """Обновление локальной копии из облака (перезапись)."""
+        if self._is_mounts_root():
+            print("Обновление запрещено в mounts://")
+            return
+
+        items = self.get_selected_items()
+        # Фильтруем только несинхронизированные файлы
+        to_update = [item for item in items if not item.is_dir and
+                     getattr(item, 'is_downloaded', False) and
+                     not getattr(item, 'is_synced', False)]
+
+        if to_update:
+            self.update_requested.emit(to_update)
 
     def _on_delete(self) -> None:
         """Удаление."""
@@ -397,7 +517,6 @@ class FileTableView(QWidget):
             return True
         return False
 
-
     def _is_mounts_root(self) -> bool:
         """Проверить, находимся ли в корне mounts://."""
         return self._current_display_path == "mounts://"
@@ -447,7 +566,6 @@ class FileTableView(QWidget):
                 # Нужно знать текущий путь
                 pass
         return False
-
 
     def set_current_path(self, path: str) -> None:
         """Установить текущий путь (для проверки mounts://)."""
