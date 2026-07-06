@@ -35,7 +35,7 @@ from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWo
 from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
 from .dialogs.close_confirm_dialog import CloseConfirmDialog
-
+from .dialogs.settings_dialog import SettingsDialog
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
@@ -336,7 +336,6 @@ class MainWindow(QMainWindow):
 
     def _on_settings(self):
         """Открыть окно настроек."""
-        from gui.dialogs.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self)
         dlg.exec()
 
