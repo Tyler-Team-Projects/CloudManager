@@ -7,6 +7,7 @@ from datetime import datetime
 import sys
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from .cloud.syns_watcher import SyncWatcher
 
@@ -103,9 +104,8 @@ class CloudBridge:
 
     def list_directory(self, path: str = None) -> list:
         """
-        Получить содержимое облачной папки (без скачивания файлов)
-        Returns:
-            Список словарей с ключами: name, type, size, is_dir, downloaded, path
+        Получить содержимое облачной папки с информацией о статусе синхронизации.
+        Проверяет файлы в папке Downloads.
         """
         if not self.provider:
             return [{
@@ -114,6 +114,7 @@ class CloudBridge:
                 'size': '',
                 'is_dir': False,
                 'downloaded': False,
+                'synced': False,
                 'path': ''
             }]
 
@@ -124,19 +125,28 @@ class CloudBridge:
 
             result = []
             for f in files:
+                # Проверяем наличие файла в Downloads по имени файла
+                local_file = self.downloads_path / f.name
+                is_downloaded = local_file.exists() if not f.is_dir else False
 
-                local_file = self.local_path / f.path.lstrip('/')
+                # Проверяем синхронизацию
+                is_synced = False
+                if is_downloaded and not f.is_dir:
+                    sync_info = self.check_file_sync(f.path)
+                    is_synced = sync_info.get('is_synced', False)
 
                 result.append({
                     'name': f.name,
                     'type': '[DIR]' if f.is_dir else '[FILE]',
                     'size': self._format_size(f.size) if not f.is_dir else '',
                     'is_dir': f.is_dir,
-                    'downloaded': local_file.exists() if not f.is_dir else False,
-                    'path': f.path
+                    'downloaded': is_downloaded,
+                    'synced': is_synced,
+                    'path': f.path,
+                    'size_bytes': f.size if not f.is_dir else 0,
+                    'modified_at': f.modified_at
                 })
 
-            # Сортировка: папки первые
             result.sort(key=lambda x: (not x['is_dir'], x['name'].lower()))
             return result
 
@@ -147,6 +157,7 @@ class CloudBridge:
                 'size': '',
                 'is_dir': False,
                 'downloaded': False,
+                'synced': False,
                 'path': ''
             }]
         except Exception as e:
@@ -156,6 +167,7 @@ class CloudBridge:
                 'size': '',
                 'is_dir': False,
                 'downloaded': False,
+                'synced': False,
                 'path': ''
             }]
 
@@ -205,59 +217,73 @@ class CloudBridge:
         """Вернуть текущий путь в облаке"""
         return self.current_path if self.current_path != '/' else '/'
 
-    def download_file(self, remote_path: str, local_path: Path = None, progress_callback=None) -> bool:
+    def download_file(self, remote_path: str, local_path: Path = None,
+                      progress_callback=None, force_overwrite: bool = False) -> bool:
         """
-        Скачать файл из облака в папку Downloads
+        Скачать файл из облака в папку Downloads.
+
+        Args:
+            remote_path: путь в облаке
+            local_path: локальный путь (если None - определяется автоматически)
+            progress_callback: callback для прогресса
+            force_overwrite: если True - перезаписывать существующий файл
         """
         if not self.provider:
             print("Облако не подключено")
             return False
 
-        # Если путь не указан - сохраняем в Downloads
+        # Если путь не указан - определяем с учетом флага force_overwrite
         if local_path is None:
-            local_path = self._get_download_path(remote_path)
+            local_path = self._get_download_path(remote_path, force_overwrite)
 
         # Создаём родительские папки
         local_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # Для GUI не спрашиваем перезапись
-        if local_path.exists():
-            # Просто перезаписываем в GUI режиме
-            pass
 
         try:
             print(f"Скачивание {remote_path}...")
             print(f"Сохранение в: {local_path}")
 
-            # Используем переданный callback или внутренний
             callback = progress_callback if progress_callback else self._progress_callback
-
-            # Скачиваем с прогрессом
             self.provider.download_file(remote_path, str(local_path), callback)
 
-            # Сохраняем метаданные
+            # Получаем хеш файла с облака
+            remote_hash = self._get_remote_hash(remote_path)
+            local_hash = None
+            if local_path.exists():
+                local_hash = self._calculate_local_hash(local_path)
+
+            # Сохраняем метаданные с хешем
             file_size = local_path.stat().st_size if local_path.exists() else 0
             self.download_metadata[str(local_path)] = {
                 'remote_path': remote_path,
                 'downloaded_at': datetime.now().isoformat(),
                 'size': file_size,
-                'name': local_path.name
+                'name': local_path.name,
+                'remote_hash': remote_hash,
+                'local_hash': local_hash,
+                'is_synced': remote_hash == local_hash if remote_hash and local_hash else False
             }
             self._save_metadata()
 
             print(f"\nСкачано: {local_path}")
+            if remote_hash and local_hash:
+                if remote_hash == local_hash:
+                    print("Файл синхронизирован")
+                else:
+                    print("Хеши не совпадают! Возможно, файл был изменен во время загрузки.")
             return True
         except Exception as e:
             print(f"\nОшибка скачивания: {e}")
             return False
 
-    def _get_download_path(self, remote_path: str) -> Path:
-        """
-        Определить путь для сохранения файла в Downloads
-        """
-        filename = Path(remote_path).name
+    def _get_download_path(self, remote_path: str, force_overwrite: bool = False) -> Path:
 
+        filename = Path(remote_path).name
         download_path = self.downloads_path / filename
+
+        if force_overwrite:
+            return download_path
+
         if download_path.exists():
             name_without_ext = filename.rsplit('.', 1)[0]
             ext = f".{filename.rsplit('.', 1)[1]}" if '.' in filename else ''
@@ -353,19 +379,14 @@ class CloudBridge:
             json.dump(self.download_metadata, f, indent=2, default=str)
 
     def open_file(self, filename: str) -> bool:
-        """
-        Открыть файл из облака (скачать если нужно)
-        """
+        """Открыть файл из облака (сохраняется в Downloads)"""
         if not self.provider:
             print("Облако не подключено")
             return False
 
-        # Полный путь в облаке
         remote_path = self.current_path.rstrip('/') + '/' + filename.lstrip('/')
         remote_path = remote_path.replace('//', '/')
-
-        # Локальный путь
-        local_file = self.local_path / remote_path.lstrip('/')
+        local_file = self._get_download_path(remote_path)
 
         # Скачиваем если нет
         if not local_file.exists():
@@ -526,3 +547,88 @@ class CloudBridge:
     def is_sync_running(self) -> bool:
         """Проверка статуса синхронизации."""
         return self._sync_watcher is not None and self._sync_watcher.is_running()
+
+    def _get_remote_hash(self, remote_path: str) -> Optional[str]:
+        """
+        Получить хеш файла с облака.
+        Яндекс Диск возвращает MD5.
+        """
+        if not self.provider:
+            return None
+
+        try:
+            # Получаем метаданные файла через клиент
+            file_meta = self.provider.client.api.get_meta(remote_path)
+            return getattr(file_meta, 'md5', None)
+        except Exception as e:
+            print(f"Ошибка получения хеша с облака: {e}")
+            return None
+
+    def _calculate_local_hash(self, file_path: Path) -> Optional[str]:
+        """
+        Вычислить хеш локального файла.
+        Используем MD5 для совместимости с Яндекс Диском.
+        """
+        if not file_path.exists():
+            return None
+
+        try:
+            import hashlib
+
+            md5_hash = hashlib.md5()
+            with open(file_path, "rb") as f:
+                # Читаем файл по частям для экономии памяти
+                for chunk in iter(lambda: f.read(8192), b""):
+                    md5_hash.update(chunk)
+
+            return md5_hash.hexdigest()
+        except Exception as e:
+            print(f"Ошибка вычисления хеша локального файла: {e}")
+            return None
+
+    def check_file_sync(self, remote_path: str) -> dict:
+        """
+        Проверить синхронизацию конкретного файла.
+        Проверяет файл в папке Downloads.
+        """
+        result = {
+            'is_downloaded': False,
+            'is_synced': False,
+            'remote_hash': None,
+            'local_hash': None,
+            'needs_download': False,
+            'needs_update': False
+        }
+
+        if not self.provider:
+            return result
+
+        try:
+            # Получаем хеш с облака
+            remote_hash = self._get_remote_hash(remote_path)
+            if not remote_hash:
+                return result
+
+            result['remote_hash'] = remote_hash
+
+            # Проверяем локальный файл в Downloads
+            # Используем имя файла из remote_path
+            filename = Path(remote_path).name
+            local_file = self.downloads_path / filename
+
+            if local_file.exists():
+                result['is_downloaded'] = True
+                local_hash = self._calculate_local_hash(local_file)
+                result['local_hash'] = local_hash
+
+                # Сравниваем хеши
+                if remote_hash and local_hash:
+                    result['is_synced'] = remote_hash == local_hash
+                    result['needs_update'] = not result['is_synced']
+            else:
+                result['needs_download'] = True
+
+        except Exception as e:
+            print(f"Ошибка проверки синхронизации: {e}")
+
+        return result
