@@ -49,7 +49,9 @@ class YandexDiskProvider(BaseCloudProvider):
                     size=res.size or 0,
                     modified_at=res.modified,
                     mime_type=getattr(res, 'mime_type', None),
-                    file_id=getattr(res, 'resource_id', None)
+                    file_id=getattr(res, 'resource_id', None),
+                    hash=getattr(res, 'md5', None),
+                    hash_type="md5"
                 ) for res in resources
             ]
             self._cache[path] = (now, result)

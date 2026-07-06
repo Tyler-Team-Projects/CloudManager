@@ -25,7 +25,8 @@ class ProgressDialog(QDialog):
     def _setup_ui(self) -> None:
         """Настройка UI."""
         self.setWindowTitle(self._title)
-        self.setMinimumWidth(400)
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(250)
         self.setModal(True)
         self.setWindowFlags(
             Qt.WindowType.Dialog |
