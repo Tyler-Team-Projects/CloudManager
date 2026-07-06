@@ -29,14 +29,15 @@ class FileTableModel(QStandardItemModel):
         self.removeRows(0, self.rowCount())
 
         for item in items:
-            # --- Колонка 0: Статус ---
+            # --- КОЛОНКА 0: СТАТУС ---
             status_item = QStandardItem()
             status_item.setEditable(False)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if item.is_dir:
-                status_item.setIcon(QIcon.fromTheme("folder"))
-                status_item.setText("📁")
+                # Для папок — пустая ячейка (иконка будет в колонке "Имя")
+                status_item.setIcon(QIcon())
+                status_item.setText("")
                 status_item.setToolTip("Папка")
                 status_item.setData("folder", Qt.ItemDataRole.UserRole + 1)
             else:
@@ -44,25 +45,25 @@ class FileTableModel(QStandardItemModel):
                 is_synced = getattr(item, 'is_synced', False)
 
                 if is_downloaded and is_synced:
-                    status_item.setIcon(QIcon.fromTheme("emblem-default"))
+                    status_item.setIcon(QIcon())
                     status_item.setText("✅")
                     status_item.setToolTip("Синхронизирован ✓")
                     status_item.setData("synced", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.green)
                 elif is_downloaded and not is_synced:
-                    status_item.setIcon(QIcon.fromTheme("emblem-important"))
+                    status_item.setIcon(QIcon())
                     status_item.setText("⚠️")
                     status_item.setToolTip("Не синхронизирован! Требуется обновление")
                     status_item.setData("outdated", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.darkYellow)
                 else:
-                    status_item.setIcon(QIcon.fromTheme("emblem-download"))
+                    status_item.setIcon(QIcon())
                     status_item.setText("⬇️")
                     status_item.setToolTip("Не скачан локально")
                     status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.gray)
 
-            # --- Колонка 1: Имя ---
+            # --- КОЛОНКА 1: ИМЯ ---
             name_item = QStandardItem(item.name)
             name_item.setData(item, Qt.ItemDataRole.UserRole)
             name_item.setEditable(False)
@@ -72,7 +73,7 @@ class FileTableModel(QStandardItemModel):
             else:
                 name_item.setIcon(self._get_file_icon(item.name))
 
-            # --- Колонка 2: Размер ---
+            # --- КОЛОНКА 2: РАЗМЕР ---
             if item.is_dir:
                 size_str = ""
             else:
@@ -82,7 +83,7 @@ class FileTableModel(QStandardItemModel):
             size_item.setEditable(False)
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-            # --- Колонка 3: Тип ---
+            # --- КОЛОНКА 3: ТИП ---
             if item.is_dir:
                 type_str = "Папка"
             else:
@@ -396,7 +397,7 @@ class FileTableView(QWidget):
             self.rename_action.setEnabled(False)
             self.delete_action.setEnabled(False)
         else:
-            self.download_action.setEnabled(has_selection and has_not_downloaded)
+            self.download_action.setEnabled(has_selection)
             self.download_action.setVisible(has_selection)
 
             self.sync_action.setEnabled(has_selection and has_downloaded)
@@ -422,8 +423,7 @@ class FileTableView(QWidget):
             return
 
         items = self.get_selected_items()
-        # Фильтруем только нескачанные файлы
-        to_download = [item for item in items if not item.is_dir and not getattr(item, 'is_downloaded', False)]
+        to_download = [item for item in items if not item.is_dir]
         if to_download:
             self.download_requested.emit(to_download)
 
