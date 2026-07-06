@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
 from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from .dialogs.settings_dialog import SettingsDialog
 
 # Добавляем путь к корню проекта
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -188,6 +189,11 @@ class MainWindow(QMainWindow):
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
 
+        settings_menu = menubar.addMenu("&Настройки")
+        settings_action = QAction("Параметры...", self)
+        settings_action.triggered.connect(self._on_settings)
+        settings_menu.addAction(settings_action)
+
     def _setup_toolbar(self) -> None:
         """Настройка панели инструментов."""
         self.toolbar = QToolBar("Панель инструментов")
@@ -232,6 +238,12 @@ class MainWindow(QMainWindow):
         self.toggle_view_btn.setChecked(False)
         self.toggle_view_btn.triggered.connect(self._toggle_view)
         self.toolbar.addAction(self.toggle_view_btn)
+
+    def _on_settings(self):
+        """Открыть окно настроек."""
+        from gui.dialogs.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -484,7 +496,7 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        # Асинхронная загрузка (от друга)
+        # Асинхронная загрузка
         self._upload_queue = [Path(f) for f in files]
         self._upload_success = 0
         self._upload_total = len(self._upload_queue)
@@ -501,8 +513,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 f"Загружено {self._upload_success} из {self._upload_total} файлов"
             )
-            self._notify_upload_complete()  # ← Уведомление от друга
-            QTimer.singleShot(10000, self._finish_upload)  # ← От друга
+            self._notify_upload_complete()
+            QTimer.singleShot(10000, self._finish_upload)
             return
 
         local_path = self._upload_queue[0]
@@ -573,7 +585,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
-        # Очищаем очередь загрузки (от друга)
+        # Очищаем очередь загрузки
         self._upload_queue = []
         self._upload_success = 0
         self._upload_total = 0
@@ -1100,8 +1112,8 @@ class MainWindow(QMainWindow):
         if not self._download_queue:
             self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
             self._on_refresh()
-            self._notify_download_complete()  # ← Уведомление от друга
-            QTimer.singleShot(10000, lambda: self.status_bar.clearMessage())  # ← От друга
+            self._notify_download_complete()
+            QTimer.singleShot(10000, lambda: self.status_bar.clearMessage())
             return
 
         file_item = self._download_queue[0]
