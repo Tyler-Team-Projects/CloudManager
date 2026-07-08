@@ -8,10 +8,14 @@ from typing import Optional, Dict
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter,
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
-    QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar
+    QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar,
+    QSystemTrayIcon, QDialog, QApplication
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
-from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from PyQt6.QtGui import (
+    QAction, QIcon, QKeySequence, QIcon, QPixmap,
+    QColor, QPainter, QFont
+)
 
 # Добавляем путь к корню проекта
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -30,6 +34,8 @@ from .views.address_bar import AddressBar
 from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker
 from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
+from .dialogs.close_confirm_dialog import CloseConfirmDialog
+
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
@@ -67,6 +73,8 @@ class MainWindow(QMainWindow):
         self._load_stylesheet()
         self._update_auth_status()
         self._update_sync_status()
+        self._tray_icon = None
+        self._setup_tray()
 
 
         # Начальная загрузка
@@ -160,7 +168,7 @@ class MainWindow(QMainWindow):
 
         exit_action = QAction("Выход", self)
         exit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        exit_action.triggered.connect(self.close)
+        exit_action.triggered.connect(self._exit_app)
         file_menu.addAction(exit_action)
 
         account_menu = menubar.addMenu("&Аккаунт")
@@ -187,6 +195,39 @@ class MainWindow(QMainWindow):
         about_action = QAction("О программе", self)
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
+
+        # Настройки
+        settings_action = QAction("Настройки", self)
+        settings_action.triggered.connect(self._on_settings)
+        menubar.addAction(settings_action)
+    def _setup_tray(self):
+        """Настройка системного трея."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self._tray_icon = QSystemTrayIcon(self)
+
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(QColor("#1976d2"))
+        painter = QPainter(pixmap)
+        painter.setPen(QColor("white"))
+        painter.setFont(QFont("Arial", 14, QFont.Weight.Bold))
+        painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "C")
+        painter.end()
+        self._tray_icon.setIcon(QIcon(pixmap))
+
+        self._tray_icon.setToolTip("Cloud Manager")
+
+        tray_menu = QMenu()
+        restore_action = tray_menu.addAction("Открыть приложение")
+        restore_action.triggered.connect(self._restore_from_tray)
+        tray_menu.addSeparator()
+        quit_action = tray_menu.addAction("Выход")
+        quit_action.triggered.connect(self._exit_app)
+
+        self._tray_icon.setContextMenu(tray_menu)
+        self._tray_icon.activated.connect(self._on_tray_activated)
+        self._tray_icon.show()
 
     def _setup_toolbar(self) -> None:
         """Настройка панели инструментов."""
@@ -232,6 +273,72 @@ class MainWindow(QMainWindow):
         self.toggle_view_btn.setChecked(False)
         self.toggle_view_btn.triggered.connect(self._toggle_view)
         self.toolbar.addAction(self.toggle_view_btn)
+
+    def _restore_from_tray(self):
+        """Восстановить окно из трея."""
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if self._tray_icon:
+            self._tray_icon.hide()
+
+    def _on_tray_activated(self, reason):
+        """Обработка активации иконки трея (двойной клик)."""
+        if reason in (QSystemTrayIcon.ActivationReason.DoubleClick,
+                        QSystemTrayIcon.ActivationReason.Trigger,):
+            self._restore_from_tray()
+
+    def _exit_app(self):
+        """Полный выход из приложения."""
+        if self._tray_icon:
+            self._tray_icon.hide()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        """Обработка закрытия окна (крестик)."""
+        settings = QSettings("TeamTyler", "DiscoHack")
+        behavior = settings.value("close_behavior", "ask")
+
+        if behavior == "tray":
+            if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+                self.hide()
+                self._tray_icon.show()
+                event.ignore()
+                return
+            else:
+                # Трей недоступен – просто выходим
+                self._exit_app()
+                event.accept()
+                return
+        elif behavior == "exit":
+            self._exit_app()
+            event.accept()
+            return
+        else:  # 'ask' – показать диалог
+            dialog = CloseConfirmDialog(self)
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                action = dialog.chosen_action()
+                if action == 'tray':
+                    if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+                        self.hide()
+                        self._tray_icon.show()
+                        event.ignore()
+                    else:
+                        self._exit_app()
+                        event.accept()
+                elif action == 'exit':
+                    self._exit_app()
+                    event.accept()
+                else:
+                    event.ignore()  # Отмена
+            else:
+                event.ignore()  # Отмена
+
+    def _on_settings(self):
+        """Открыть окно настроек."""
+        from gui.dialogs.settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self)
+        dlg.exec()
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -484,7 +591,7 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        # Асинхронная загрузка (от друга)
+        # Асинхронная загрузка
         self._upload_queue = [Path(f) for f in files]
         self._upload_success = 0
         self._upload_total = len(self._upload_queue)
@@ -492,6 +599,7 @@ class MainWindow(QMainWindow):
         self._upload_dest_path = self._current_path  # Для уведомления
 
         if self._upload_queue:
+            self._upload_dest_path = self._current_path
             self.status_bar.showMessage(f"Загрузка 0 из {self._upload_total}...")
             self._upload_next()
 
@@ -501,8 +609,8 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(
                 f"Загружено {self._upload_success} из {self._upload_total} файлов"
             )
-            self._notify_upload_complete()  # ← Уведомление от друга
-            QTimer.singleShot(10000, self._finish_upload)  # ← От друга
+            self._notify_upload_complete()
+            QTimer.singleShot(10000, self._finish_upload)
             return
 
         local_path = self._upload_queue[0]
@@ -573,7 +681,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
-        # Очищаем очередь загрузки (от друга)
+        # Очищаем очередь загрузки
         self._upload_queue = []
         self._upload_success = 0
         self._upload_total = 0
@@ -1099,9 +1207,8 @@ class MainWindow(QMainWindow):
         """Скачивание следующего файла из очереди."""
         if not self._download_queue:
             self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
-            self._on_refresh()
-            self._notify_download_complete()  # ← Уведомление от друга
-            QTimer.singleShot(10000, lambda: self.status_bar.clearMessage())  # ← От друга
+            self._notify_download_complete()
+            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
         file_item = self._download_queue[0]
@@ -1124,10 +1231,10 @@ class MainWindow(QMainWindow):
 
     def _on_copy_files(self, items: list) -> None:
         """Копирование файлов (сохраняем в буфер)."""
-        print(f"DEBUG: _on_copy_files получил {len(items)} элементов")  # ← ДОБАВИТЬ
+        print(f"DEBUG: _on_copy_files получил {len(items)} элементов")
         self._clipboard = items
         for item in items:
-            print(f"  - {item.name}")  # ← ДОБАВИТЬ
+            print(f"  - {item.name}")
         self.status_bar.showMessage(f"Скопировано {len(items)} элементов")
 
     def _on_paste_files(self) -> None:
@@ -1142,7 +1249,6 @@ class MainWindow(QMainWindow):
 
         dest_path = self._current_path
 
-        from gui.dialogs.progress_dialog import ProgressDialog
         progress = ProgressDialog("Копирование файлов", self)
         progress.set_cancellable(False)
         progress.show()
@@ -1174,6 +1280,41 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Скопировано {success_count} из {len(self._clipboard)} файлов")
         self._on_refresh()
 
+    def _can_show_notifications(self) -> bool:
+        """Проверяет, разрешены ли уведомления."""
+        settings = QSettings("TeamTyler", "CloudManager")
+        settings.sync()
+        return settings.value("show_notifications", True, type=bool)
+
+    def _notify_upload_complete(self):
+        """Уведомление о завершении загрузки на диск."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Загружено {self._upload_success} из {self._upload_total} файлов"
+        dest_path = getattr(self, '_upload_dest_path', '/')
+        toast = ToastNotification(
+            "Загрузка завершена",
+            msg,
+            "Открыть папку в облаке",
+            callback=lambda: self._navigate_to_provider('cloud', dest_path),
+            parent=self
+        )
+        toast.show_at_bottom_right()
+
+    def _notify_download_complete(self):
+        """Уведомление о завершении скачивания."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Скачано {self._download_success} из {self._download_total} файлов"
+        downloads_path = str(self._cloud_provider._bridge.downloads_path) if self._cloud_provider else ""
+        toast = ToastNotification(
+            "Скачивание завершено",
+            msg,
+            "Открыть папку Downloads",
+            callback=lambda: self._navigate_to_provider('local', downloads_path),
+            parent=self
+        )
+        toast.show_at_bottom_right()
     def _is_local_provider(self) -> bool:
         """Проверить, является ли текущий провайдер локальным."""
         if not self._current_provider:

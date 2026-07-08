@@ -404,7 +404,7 @@ class CloudBridge:
             print(f"Не удалось открыть {filename}: {e}")
             return False
 
-    def upload_file(self, local_path: Path, remote_path: str = None) -> bool:
+    def upload_file(self, local_path: Path, remote_path: str = None, progress_callback = None) -> bool:
         """
         Загрузить файл в облако
         """
@@ -417,7 +417,7 @@ class CloudBridge:
 
         try:
             print(f"Загрузка {local_path} -> {remote_path}...")
-            self.provider.upload_file(str(local_path), remote_path)
+            self.provider.upload_file(str(local_path), remote_path, progress_callback)
             print("Загружено")
             return True
         except Exception as e:
