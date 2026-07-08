@@ -388,15 +388,16 @@ class FileTableView(QWidget):
             getattr(item, 'is_downloaded', False) and not getattr(item, 'is_synced', False) for item in items)
         has_folder = any(item.is_dir for item in items)
 
-        if self._is_mounts_root():
+        is_local = self._is_local_provider()
+        is_root = self._is_mounts_root()
+
+        if is_root or is_local:
+            # На локальном диске или в mounts:// облачные операции НЕДОСТУПНЫ
             self.download_action.setEnabled(False)
             self.sync_action.setEnabled(False)
             self.update_action.setEnabled(False)
-            self.copy_action.setEnabled(False)
-            self.paste_action.setEnabled(False)
-            self.rename_action.setEnabled(False)
-            self.delete_action.setEnabled(False)
         else:
+            # В облачной папке облачные операции доступны
             self.download_action.setEnabled(has_selection)
             self.download_action.setVisible(has_selection)
 
@@ -406,6 +407,14 @@ class FileTableView(QWidget):
             self.update_action.setEnabled(has_selection and has_outdated)
             self.update_action.setVisible(has_selection)
 
+        if is_root:
+            # В корне mounts:// локальные операции блокируем
+            self.copy_action.setEnabled(False)
+            self.paste_action.setEnabled(False)
+            self.rename_action.setEnabled(False)
+            self.delete_action.setEnabled(False)
+        else:
+            # На локальном диске И в облачной папке локальные операции доступны
             self.copy_action.setEnabled(has_selection and not has_folder)
             self.paste_action.setEnabled(has_selection)
             self.rename_action.setEnabled(has_selection and len(items) == 1)
@@ -422,6 +431,10 @@ class FileTableView(QWidget):
             print("Скачивание запрещено в mounts://")
             return
 
+        if self._is_local_provider():
+            print("Скачивание запрещено на локальном диске")
+            return
+
         items = self.get_selected_items()
         to_download = [item for item in items if not item.is_dir]
         if to_download:
@@ -431,6 +444,10 @@ class FileTableView(QWidget):
         """Проверка синхронизации выбранных файлов."""
         if self._is_mounts_root():
             print("Проверка синхронизации запрещена в mounts://")
+            return
+
+        if self._is_local_provider():
+            print("Проверка синхронизации доступна только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -443,6 +460,10 @@ class FileTableView(QWidget):
         """Обновление локальной копии из облака (перезапись)."""
         if self._is_mounts_root():
             print("Обновление запрещено в mounts://")
+            return
+
+        if self._is_local_provider():
+            print("Обновление доступно только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -516,6 +537,12 @@ class FileTableView(QWidget):
         if file_item.path in root_paths:
             return True
         return False
+
+    def _is_local_provider(self) -> bool:
+        """Проверить, является ли текущий провайдер локальным."""
+        if not self._current_provider:
+            return False
+        return hasattr(self._current_provider, 'get_mounts_root')
 
     def _is_mounts_root(self) -> bool:
         """Проверить, находимся ли в корне mounts://."""
