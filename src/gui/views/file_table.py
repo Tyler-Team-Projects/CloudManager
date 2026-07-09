@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QHeaderView,
     QAbstractItemView, QMenu, QListWidget, QListWidgetItem,
-    QStackedWidget, QInputDialog
+    QStackedWidget, QInputDialog, QStyle, QApplication
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize
 
@@ -69,7 +69,7 @@ class FileTableModel(QStandardItemModel):
             name_item.setEditable(False)
 
             if item.is_dir:
-                name_item.setIcon(QIcon.fromTheme("folder"))
+                name_item.setIcon(self._get_icon("folder"))
             else:
                 name_item.setIcon(self._get_file_icon(item.name))
 
@@ -105,11 +105,14 @@ class FileTableModel(QStandardItemModel):
     def _get_file_icon(self, filename: str) -> QIcon:
         """Получить иконку по расширению файла."""
         ext = Path(filename).suffix.lower()
+
         icon_map = {
             '.jpg': QIcon.fromTheme("image-x-generic"),
             '.jpeg': QIcon.fromTheme("image-x-generic"),
             '.png': QIcon.fromTheme("image-x-generic"),
             '.gif': QIcon.fromTheme("image-x-generic"),
+            '.bmp': QIcon.fromTheme("image-x-generic"),
+            '.webp': QIcon.fromTheme("image-x-generic"),
             '.pdf': QIcon.fromTheme("application-pdf"),
             '.doc': QIcon.fromTheme("application-msword"),
             '.docx': QIcon.fromTheme("application-msword"),
@@ -117,8 +120,38 @@ class FileTableModel(QStandardItemModel):
             '.xlsx': QIcon.fromTheme("application-vnd.ms-excel"),
             '.mp3': QIcon.fromTheme("audio-x-generic"),
             '.mp4': QIcon.fromTheme("video-x-generic"),
+            '.avi': QIcon.fromTheme("video-x-generic"),
+            '.mkv': QIcon.fromTheme("video-x-generic"),
+            '.mov': QIcon.fromTheme("video-x-generic"),
+            '.zip': QIcon.fromTheme("package-x-generic"),
+            '.rar': QIcon.fromTheme("package-x-generic"),
+            '.7z': QIcon.fromTheme("package-x-generic"),
+            '.tar': QIcon.fromTheme("package-x-generic"),
+            '.gz': QIcon.fromTheme("package-x-generic"),
         }
-        return icon_map.get(ext, QIcon.fromTheme("text-x-generic"))
+
+        icon = icon_map.get(ext, QIcon.fromTheme("text-x-generic"))
+
+        if icon.isNull():
+            style = QApplication.style()
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+
+        return icon
+
+    def _get_icon(self, name: str) -> QIcon:
+        """Получить иконку (работает на всех платформах)."""
+        icon = QIcon.fromTheme(name)
+        if not icon.isNull():
+            return icon
+
+        style = QApplication.style()
+
+        if name == "folder":
+            return style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        elif name == "file":
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        else:
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def get_item(self, row: int) -> Optional[CloudFile]:
         """Получить элемент по строке."""
@@ -146,6 +179,7 @@ class FileTableView(QWidget):
         self._view_mode = "icons"
         self._current_display_path = ""
         self._clipboard_items: List[CloudFile] = []
+        self._is_cloud_provider = False
         self._setup_ui()
         self._setup_context_menu()
 
@@ -160,7 +194,7 @@ class FileTableView(QWidget):
         self.icon_view = QListWidget()
         self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
         self.icon_view.setIconSize(QSize(64, 64))
-        self.icon_view.setGridSize(QSize(140, 140))
+        self.icon_view.setGridSize(QSize(160, 160))
         self.icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.icon_view.setMovement(QListWidget.Movement.Static)
         self.icon_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -304,7 +338,7 @@ class FileTableView(QWidget):
 
             # Иконка
             if item.is_dir:
-                list_item.setIcon(QIcon.fromTheme("folder"))
+                list_item.setIcon(self._get_icon("folder"))
             else:
                 # Для изображений показываем миниатюру
                 ext = Path(item.name).suffix.lower()
@@ -316,7 +350,7 @@ class FileTableView(QWidget):
                     list_item.setIcon(icon)
                 else:
                     # Для облачных файлов или других типов - стандартная иконка
-                    list_item.setIcon(QIcon.fromTheme("text-x-generic"))
+                    list_item.setIcon(self._get_icon("file"))
 
             # Добавляем размер под иконкой
             if not item.is_dir:
@@ -602,6 +636,23 @@ class FileTableView(QWidget):
     def set_current_path(self, path: str) -> None:
         """Установить текущий путь (для проверки mounts://)."""
         self._current_display_path = path
+
+    def _get_icon(self, name: str) -> QIcon:
+        """Получить иконку (работает на всех платформах)."""
+        # пробуем из темы
+        icon = QIcon.fromTheme(name)
+        if not icon.isNull():
+            return icon
+
+        # иначе используем стандартную Qt
+        style = QApplication.style()
+
+        if name == "folder":
+            return style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        elif name == "file":
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        else:
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def _get_thumbnail(self, file_path: str, size: int = 128) -> QIcon:
         """Получить миниатюру изображения."""
