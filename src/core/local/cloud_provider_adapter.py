@@ -69,14 +69,10 @@ class CloudProviderAdapter(BaseCloudProvider):
         return self._bridge.download_file(remote_path, Path(local_path), progress_callback)
 
     def delete_file(self, remote_path: str) -> bool:
-        filename = Path(remote_path).name
-        parent = str(Path(remote_path).parent)
-
-        old_path = self._bridge.current_path
-        self._bridge.current_path = parent if parent != '.' else '/'
-        result = self._bridge.delete_file(filename)
-        self._bridge.current_path = old_path
-        return result
+        """Удалить файл/папку в облаке."""
+        if not self._bridge.has_token():
+            return False
+        return self._bridge.delete_file(remote_path)
 
     def move_file(self, src: str, dst: str) -> bool:
         return False  # Не реализовано
