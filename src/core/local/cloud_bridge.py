@@ -443,19 +443,22 @@ class CloudBridge:
             print(f"Ошибка создания папки: {e}")
             return False
 
-    def delete_file(self, filename: str) -> bool:
+    def delete_file(self, remote_path: str) -> bool:
         """
-        Удалить файл/папку в облаке
+        Удалить файл/папку в облаке.
+        remote_path – полный путь, например '/folder/file.txt'
         """
         if not self.provider:
             print("Облако не подключено")
             return False
 
-        remote_path = self.current_path.rstrip('/') + '/' + filename.lstrip('/')
-        remote_path = remote_path.replace('//', '/')
+        # Нормализуем путь (убираем возможный префикс yadisk:// и двойные слеши)
+        clean_path = remote_path.replace("yadisk://", "").replace("\\", "/")
+        clean_path = '/' + clean_path.lstrip('/')
+        clean_path = clean_path.replace('//', '/')
 
-        # Удаляем локальный кэш если есть
-        local_file = self.local_path / remote_path.lstrip('/')
+        # Удаляем локальный кэш, если есть
+        local_file = self.local_path / clean_path.lstrip('/')
         if local_file.exists():
             if local_file.is_dir():
                 import shutil
@@ -464,8 +467,8 @@ class CloudBridge:
                 local_file.unlink()
 
         try:
-            self.provider.delete_file(remote_path)
-            print(f"'{filename}' удалён")
+            self.provider.delete_file(clean_path)
+            print(f"'{remote_path}' удалён")
             return True
         except Exception as e:
             print(f"Ошибка удаления: {e}")
