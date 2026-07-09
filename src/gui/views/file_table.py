@@ -499,7 +499,7 @@ class FileTableView(QWidget):
                 print("Нельзя удалить корневой элемент")
                 return
 
-        self.delete_requested.emit(items)
+        # self.delete_requested.emit(items)
 
     def _on_rename(self) -> None:
         """Переименование выбранного элемента."""
@@ -550,6 +550,11 @@ class FileTableView(QWidget):
 
     def keyPressEvent(self, event) -> None:
         """Обработка нажатий клавиш."""
+        if event.key() == Qt.Key.Key_Delete:
+            self._on_delete()
+            event.accept()
+            return
+
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             if event.key() == Qt.Key.Key_C:
                 # Ctrl+C - копировать

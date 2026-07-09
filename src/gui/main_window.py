@@ -31,10 +31,11 @@ from core.local.cloud_provider_adapter import CloudProviderAdapter
 from .views.side_bar import SideBar
 from .views.file_table import FileTableView
 from .views.address_bar import AddressBar
-from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker
+from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker, DeleteWorker
 from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
 from .dialogs.close_confirm_dialog import CloseConfirmDialog
+from .dialogs.settings_dialog import SettingsDialog
 
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
@@ -63,6 +64,10 @@ class MainWindow(QMainWindow):
         self._cloud_provider = None
         self._download_worker = None
         self._upload_worker = None
+        self._delete_queue = []
+        self._delete_success = 0
+        self._delete_total = 0
+        self._delete_provider = None
 
         self._init_providers()
         self._setup_ui()
@@ -336,7 +341,6 @@ class MainWindow(QMainWindow):
 
     def _on_settings(self):
         """Открыть окно настроек."""
-        from gui.dialogs.settings_dialog import SettingsDialog
         dlg = SettingsDialog(self)
         dlg.exec()
 
@@ -381,12 +385,11 @@ class MainWindow(QMainWindow):
         self.address_bar.refresh_clicked.connect(self._on_refresh)
         self.address_bar.go_up_clicked.connect(self._on_go_up)
         self.file_table.file_double_clicked.connect(self._on_file_double_clicked)
-        self.file_table.delete_requested.connect(self._on_files_delete)
+        self.file_table.delete_requested.connect(self._on_delete)
         self.file_table.download_requested.connect(self._on_files_download)
         self.file_table.update_requested.connect(self._on_files_update)
         self.file_table.rename_requested.connect(self._on_file_rename)
         self.file_table.copy_requested.connect(self._on_copy_files)
-        print("DEBUG: Сигнал copy_requested подключён")
         self.file_table.paste_requested.connect(self._on_paste_files)
         self.file_table.sync_check_requested.connect(self._on_sync_check)
 
@@ -916,61 +919,79 @@ class MainWindow(QMainWindow):
         """Скачивание файлов через сигнал."""
         self._on_download()
 
-    def _on_delete(self) -> None:
-        """Удаление выбранных файлов."""
-        # Защита: нельзя удалять в mounts://
-        if self._current_path == "mounts://":
-            QMessageBox.warning(self, "Ошибка", "Удаление запрещено в корневой директории")
-            return
-
-        selected = self.file_table.get_selected_items()
-        if not selected:
-            QMessageBox.information(self, "Инфо", "Выберите файлы для удаления")
-            return
-        if self._current_path == "mounts://":
-            QMessageBox.warning(self, "Ошибка", "Нельзя удалять в корневой директории mounts://")
-            return
-        for item in selected:
-            if item.path == "mounts://":
-                QMessageBox.warning(self, "Ошибка", "Нельзя удалить корневой элемент")
+    def _on_delete(self, items=None) -> None:
+        """Асинхронное удаление выбранных файлов."""
+        # Если items не передан (кнопка тулбара / Del), берём выделенные
+        if items is None or isinstance(items, bool):
+            if self._current_path == "mounts://":
+                QMessageBox.warning(self, "Ошибка", "Удаление запрещено в корневой директории")
                 return
-
-        names = [f.name for f in selected]
-        reply = QMessageBox.question(
-            self,
-            "Подтверждение удаления",
-            f"Удалить выбранные элементы?\n\n{', '.join(names[:5])}"
-            + (f"\n... и ещё {len(names)-5}" if len(names) > 5 else ""),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-
-        if reply != QMessageBox.StandardButton.Yes:
+            items = self.file_table.get_selected_items()
+        # Если передан список – используем его
+        elif isinstance(items, list):
+            pass
+        else:
+            # Пришёл bool или другой тип – игнорируем (защита от сигнала QAction)
             return
 
-        success_count = 0
-        for file_item in selected:
-            try:
-                self._current_provider.delete_file(file_item.path)
-                success_count += 1
-            except Exception as e:
-                QMessageBox.warning(self, "Ошибка", f"Не удалось удалить {file_item.name}: {e}")
-
-        self.status_bar.showMessage(f"Удалено {success_count} из {len(selected)} элементов")
-        self._on_refresh()
-
-        if self._current_path == "mounts://":
-            QMessageBox.warning(self, "Ошибка", "Нельзя удалять в корневой директории")
+        if not items:
             return
 
-        # Защита: нельзя удалять корневые элементы
-        for item in selected:
+        # Защита от удаления системных элементов
+        for item in items:
             if item.path == "mounts://" or item.name in ["Домашняя папка", "Корень (/)", "/home"]:
                 QMessageBox.warning(self, "Ошибка", f"Нельзя удалить системный элемент: {item.name}")
                 return
 
-    def _on_files_delete(self, files: list) -> None:
-        """Удаление файлов через сигнал."""
-        self._on_delete()
+        names = [f.name for f in items]
+        reply = QMessageBox.question(
+            self,
+            "Подтверждение удаления",
+            f"Удалить выбранные элементы?\n\n{', '.join(names[:5])}"
+            + (f"\n... и ещё {len(names) - 5}" if len(names) > 5 else ""),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._delete_queue = items.copy()
+        self._delete_success = 0
+        self._delete_total = len(items)
+        self._delete_provider = self._current_provider
+        self._delete_next()
+
+    def _delete_next(self) -> None:
+        """Запуск удаления следующего файла из очереди."""
+        if not self._delete_queue:
+            # Сразу обновляем таблицу
+            self._on_refresh()
+            # Показываем итог в статус-баре
+            QTimer.singleShot(
+               750,
+                lambda: self.status_bar.showMessage(
+                    f"Удалено {self._delete_success} из {self._delete_total} элементов"
+                )
+            )
+            # Через 10 секунд очищаем статус-бар
+            QTimer.singleShot(10000, self.status_bar.clearMessage)
+            return
+
+        file_item = self._delete_queue.pop(0)
+        self._delete_worker = DeleteWorker(self._delete_provider, file_item.path)
+        self._delete_worker.finished.connect(self._on_delete_finished)
+        self._delete_worker.error.connect(self._on_delete_error)
+        self._delete_worker.start()
+
+    def _on_delete_finished(self, success: bool, path: str) -> None:
+        """Обработка успешного удаления одного файла."""
+        if success:
+            self._delete_success += 1
+        self._delete_next()
+
+    def _on_delete_error(self, error: str, path: str) -> None:
+        """Ошибка удаления файла."""
+        print(f"[ERROR] Delete failed for {path}: {error}")
+        self._delete_next()
 
     def _open_file(self, file_item: CloudFile) -> None:
         """Открытие файла."""
@@ -1330,3 +1351,4 @@ class MainWindow(QMainWindow):
             self.upload_menu_action.setEnabled(not is_local)
         if hasattr(self, 'download_menu_action'):
             self.download_menu_action.setEnabled(not is_local)
+
