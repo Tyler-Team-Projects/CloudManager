@@ -1351,3 +1351,4 @@ class MainWindow(QMainWindow):
             self.upload_menu_action.setEnabled(not is_local)
         if hasattr(self, 'download_menu_action'):
             self.download_menu_action.setEnabled(not is_local)
+
