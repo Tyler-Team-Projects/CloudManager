@@ -194,7 +194,7 @@ class FileTableView(QWidget):
         self.icon_view = QListWidget()
         self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
         self.icon_view.setIconSize(QSize(64, 64))
-        self.icon_view.setGridSize(QSize(140, 140))
+        self.icon_view.setGridSize(QSize(160, 160))
         self.icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.icon_view.setMovement(QListWidget.Movement.Static)
         self.icon_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
