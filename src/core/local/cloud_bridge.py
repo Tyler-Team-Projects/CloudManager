@@ -4,6 +4,7 @@
 """
 import shutil
 from datetime import datetime
+import os
 import sys
 import subprocess
 from pathlib import Path
@@ -384,21 +385,47 @@ class CloudBridge:
             print("Облако не подключено")
             return False
 
-        remote_path = self.current_path.rstrip('/') + '/' + filename.lstrip('/')
+        # нормализуем путь для винды
+        clean_filename = filename.replace("yadisk://", "").replace("\\", "/")
+        current = self.current_path.replace("\\", "/").rstrip('/')
+
+        # если current пустой или просто / - оставляем /
+        if current == "":
+            current = "/"
+
+        clean_filename = clean_filename.lstrip('/')
+
+        # полный путь в облаке
+        remote_path = f"{current}/{clean_filename}"
         remote_path = remote_path.replace('//', '/')
+
+        print(f"DEBUG: open_file - remote_path = {remote_path}")
+
+        # локальный путь
         local_file = self._get_download_path(remote_path)
 
-        # Скачиваем если нет
+        #  скачиваем если нет
         if not local_file.exists():
             if not self.download_file(remote_path, local_file):
                 return False
 
-        # Открываем файл
         try:
-            subprocess.run(['xdg-open', str(local_file)], check=True)
-            return True
+            import sys
+            if sys.platform == 'win32':
+                import os
+                os.startfile(str(local_file))
+                return True
+            elif sys.platform == 'darwin':
+                subprocess.run(['open', str(local_file)], check=True)
+                return True
+            else:
+                subprocess.run(['xdg-open', str(local_file)], check=True)
+                return True
         except FileNotFoundError:
-            print("xdg-open не найден. Установите: sudo apt install xdg-utils")
+            if sys.platform == 'win32':
+                print("Не удалось открыть файл")
+            else:
+                print("xdg-open не найден. Установите: sudo apt install xdg-utils")
             return False
         except Exception as e:
             print(f"Не удалось открыть {filename}: {e}")
