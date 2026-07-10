@@ -29,7 +29,6 @@ class DownloadWorker(QThread):
         self._is_cancelled = False
 
     def run(self) -> None:
-        """Выполнение скачивания."""
         try:
             download_result = {"success": False, "error": None, "done": False}
 
@@ -43,8 +42,14 @@ class DownloadWorker(QThread):
                     if not self._is_cancelled:
                         download_result["success"] = True
                 except Exception as e:
-                    if not self._is_cancelled:
-                        download_result["error"] = str(e)
+                    # Не эмитим error здесь, просто сохраняем ошибку
+                    download_result["error"] = str(e)
+                    # Удаляем частично скачанный файл
+                    if os.path.exists(self.local_path):
+                        try:
+                            os.remove(self.local_path)
+                        except OSError:
+                            pass
                 finally:
                     download_result["done"] = True
 
@@ -61,7 +66,6 @@ class DownloadWorker(QThread):
                         last_size = current_size
                 time.sleep(0.3)
 
-            # Если отменено - удаляем недокачанный файл
             if self._is_cancelled:
                 self._force_stop_download()
                 if os.path.exists(self.local_path):
@@ -72,19 +76,29 @@ class DownloadWorker(QThread):
                 self.cancelled.emit()
                 return
 
-            # Ждем завершения потока скачивания
             download_thread.join(timeout=2)
 
-            # Финальный размер
-            if os.path.exists(self.local_path) and not self._is_cancelled:
+            if not download_result["error"] and download_result["success"] and self.total_size > 0:
+                if os.path.exists(self.local_path):
+                    actual_size = os.path.getsize(self.local_path)
+                    if actual_size < self.total_size:
+                        download_result["error"] = f"Неполное скачивание: {actual_size}/{self.total_size} байт"
+                        download_result["success"] = False
+                        # Удаляем недокачанный файл
+                        try:
+                            os.remove(self.local_path)
+                        except OSError:
+                            pass
+
+            if os.path.exists(self.local_path) and not self._is_cancelled and download_result["success"]:
                 final_size = os.path.getsize(self.local_path)
                 self.progress.emit(final_size, self.total_size)
 
+            # Эмитируем сигнал в зависимости от результата
             if download_result["error"]:
                 self.error.emit(download_result["error"])
-            elif not self._is_cancelled:
-                # ← ИЗМЕНЕНО: передаем remote_path
-                self.finished.emit(download_result["success"], self.local_path, self.remote_path)
+            elif not self._is_cancelled and download_result["success"]:
+                self.finished.emit(True, self.local_path, self.remote_path)
 
         except Exception as e:
             if not self._is_cancelled:

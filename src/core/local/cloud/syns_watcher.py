@@ -100,6 +100,7 @@ class SyncWatcher:
 
             except Exception as e:
                 print(f"[SYNC] Cloud check error: {e}")
+                time.sleep(10)
 
     def start_background(self):
         """Запуск фоновой синхронизации."""

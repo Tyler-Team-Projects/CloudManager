@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._pre_search_path = ""
         self._clipboard = []
         self._operation_in_progress = False
+        self._active_workers = []
 
         self._upload_queue = []
         self._upload_success = 0
@@ -424,14 +425,27 @@ class MainWindow(QMainWindow):
 
         self.status_bar.showMessage(f"Загрузка {path}...")
 
-        # Отменяем предыдущий воркер
-        if self._list_worker and self._list_worker.isRunning():
-            self._list_worker.terminate()
-            self._list_worker.wait(2000)
-
+        # Не ждём предыдущий воркер, просто создаём новый.
+        # Предыдущий воркер продолжит работать в фоне, но его сигналы
+        # будут проверять, актуален ли ещё путь.
         self._list_worker = ListDirectoryWorker(self._current_provider, path)
-        self._list_worker.finished.connect(self._on_directory_loaded)
-        self._list_worker.error.connect(self._on_directory_error)
+        self._active_workers.append(self._list_worker)
+
+        def on_finished(files):
+            if self._list_worker in self._active_workers:
+                self._active_workers.remove(self._list_worker)
+            # Обновляем только если путь всё ещё совпадает
+            if self._current_path == path:
+                self._on_directory_loaded(files)
+
+        def on_error(err):
+            if self._list_worker in self._active_workers:
+                self._active_workers.remove(self._list_worker)
+            if self._current_path == path:
+                self._on_directory_error(err)
+
+        self._list_worker.finished.connect(on_finished)
+        self._list_worker.error.connect(on_error)
         self._list_worker.start()
 
     def _on_directory_loaded(self, files: list) -> None:
@@ -711,8 +725,15 @@ class MainWindow(QMainWindow):
         """Скачивание следующего файла из очереди."""
         if not self._download_queue:
             self._operation_in_progress = False
-            self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
-            self._notify_download_complete()
+            if self._download_success > 0:
+                self.status_bar.showMessage(
+                    f"Скачано {self._download_success} из {self._download_total} файлов"
+                )
+                self._notify_download_complete()
+            else:
+                self.status_bar.showMessage(
+                    f"Скачивание прервано. 0 из {self._download_total} файлов"
+                )
             QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
@@ -756,30 +777,26 @@ class MainWindow(QMainWindow):
 
             if success:
                 self._download_success += 1
-                # Обновляем статус скачанного файла
-                cloud_provider = self._providers.get('cloud')
-                if cloud_provider and hasattr(cloud_provider, '_bridge'):
-                    bridge = cloud_provider._bridge
-                    sync_info = bridge.check_file_sync(remote_path)
-                    downloaded_item.is_downloaded = True
-                    downloaded_item.is_synced = sync_info.get('is_synced', False)
+                # Просто помечаем, что файл скачан (без сетевого запроса)
+                downloaded_item.is_downloaded = True
+                downloaded_item.is_synced = False  # или можно не трогать
 
-                    # Сохраняем метаданные
-                    import os
+                # Сохраняем метаданные о факте скачивания
+                if os.path.exists(local_path):
                     from datetime import datetime
-                    if os.path.exists(local_path):
+                    cloud_provider = self._providers.get('cloud')
+                    if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                        bridge = cloud_provider._bridge
                         bridge.download_metadata[local_path] = {
                             'remote_path': remote_path,
                             'downloaded_at': datetime.now().isoformat(),
                             'size': os.path.getsize(local_path),
                             'name': Path(local_path).name,
-                            'remote_hash': sync_info.get('remote_hash'),
-                            'local_hash': sync_info.get('local_hash'),
-                            'is_synced': sync_info.get('is_synced', False)
+                            'remote_hash': None,
+                            'local_hash': None,
+                            'is_synced': False
                         }
                         bridge._save_metadata()
-
-                    self._update_file_status(remote_path, downloaded_item)
 
         self._download_next()
 
@@ -801,9 +818,28 @@ class MainWindow(QMainWindow):
 
     def _on_download_error(self, error: str) -> None:
         """Ошибка скачивания."""
-        print(f"[ERROR] Download failed: {error}")
+        if self._download_queue:
+            failed_item = self._download_queue.pop(0)
+            file_name = failed_item.name
+        else:
+            file_name = "Неизвестный файл"
+        self._notify_download_failed(file_name, error)
+
         self._download_next()
 
+    def _notify_download_failed(self, file_name: str, error_msg: str):
+        """Показывает пользователю уведомление о неудачном скачивании файла"""
+        if not self._can_show_notifications():
+            return
+        toast = ToastNotification(
+            "Ошибка скачивания",
+            f"Не удалось скачать файл {file_name} \n"
+            "Проверьте соединение с интернетом или попробуйте повторить позже. \n"
+            "Закрыть",
+            callback=None,
+            parent=self
+        )
+        toast.show_at_bottom_right()
     def _on_sync_check(self, items: list) -> None:
         """Проверка синхронизации выбранных файлов."""
         if not items:
