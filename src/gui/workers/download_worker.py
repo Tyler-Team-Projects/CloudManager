@@ -15,7 +15,7 @@ class DownloadWorker(QThread):
     """Фоновое скачивание файла."""
 
     progress = pyqtSignal(int, int)  # current_size, total_size
-    finished = pyqtSignal(bool, str, str)  # success, local_path, remote_path  # ← ИЗМЕНЕНО
+    finished = pyqtSignal(bool, str, str)  # success, local_path, remote_path
     error = pyqtSignal(str)
     cancelled = pyqtSignal()
 
@@ -83,7 +83,7 @@ class DownloadWorker(QThread):
             if download_result["error"]:
                 self.error.emit(download_result["error"])
             elif not self._is_cancelled:
-                # ← ИЗМЕНЕНО: передаем remote_path
+                # передаем remote_path
                 self.finished.emit(download_result["success"], self.local_path, self.remote_path)
 
         except Exception as e:
