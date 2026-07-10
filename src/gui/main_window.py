@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
         self._search_mode = False
         self._pre_search_path = ""
         self._clipboard = []
+        self._operation_in_progress = False
 
         self._upload_queue = []
         self._upload_success = 0
@@ -426,7 +427,7 @@ class MainWindow(QMainWindow):
         # Отменяем предыдущий воркер
         if self._list_worker and self._list_worker.isRunning():
             self._list_worker.terminate()
-            self._list_worker.wait()
+            self._list_worker.wait(2000)
 
         self._list_worker = ListDirectoryWorker(self._current_provider, path)
         self._list_worker.finished.connect(self._on_directory_loaded)
@@ -594,6 +595,7 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
+        self._operation_in_progress = True
         # Асинхронная загрузка
         self._upload_queue = [Path(f) for f in files]
         self._upload_success = 0
@@ -609,6 +611,7 @@ class MainWindow(QMainWindow):
     def _upload_next(self) -> None:
         """Обработка очереди загрузки – запуск следующего файла."""
         if not self._upload_queue:
+            self._operation_in_progress = False
             self.status_bar.showMessage(
                 f"Загружено {self._upload_success} из {self._upload_total} файлов"
             )
@@ -684,6 +687,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
+        self._operation_in_progress = True
+
         # Очищаем очередь загрузки
         self._upload_queue = []
         self._upload_success = 0
@@ -701,6 +706,33 @@ class MainWindow(QMainWindow):
         else:
             self.progress_bar.setVisible(False)
             QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
+
+    def _download_next(self) -> None:
+        """Скачивание следующего файла из очереди."""
+        if not self._download_queue:
+            self._operation_in_progress = False
+            self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
+            self._notify_download_complete()
+            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
+            return
+
+        file_item = self._download_queue[0]
+        current = self._download_success + 1
+
+        self.status_bar.showMessage(f"Скачивание: {file_item.name} ({current} из {self._download_total})")
+
+        local_path = self._cloud_provider._bridge._get_download_path(file_item.path)
+
+        self._download_worker = DownloadWorker(
+            self._cloud_provider,
+            file_item.path,
+            str(local_path),
+            file_item.size
+        )
+        self._download_worker.progress.connect(self._on_download_progress)
+        self._download_worker.finished.connect(self._on_download_finished)
+        self._download_worker.error.connect(self._on_download_error)
+        self._download_worker.start()
 
     def _on_download_progress(self, current: int, total: int) -> None:
         """Обновление прогресса."""
@@ -922,6 +954,7 @@ class MainWindow(QMainWindow):
     def _on_delete(self, items=None) -> None:
         """Асинхронное удаление выбранных файлов."""
         # Если items не передан (кнопка тулбара / Del), берём выделенные
+        self._operation_in_progress = True
         if items is None or isinstance(items, bool):
             if self._current_path == "mounts://":
                 QMessageBox.warning(self, "Ошибка", "Удаление запрещено в корневой директории")
@@ -963,6 +996,7 @@ class MainWindow(QMainWindow):
     def _delete_next(self) -> None:
         """Запуск удаления следующего файла из очереди."""
         if not self._delete_queue:
+            self._operation_in_progress = False
             # Сразу обновляем таблицу
             self._on_refresh()
             # Показываем итог в статус-баре
@@ -1067,6 +1101,8 @@ class MainWindow(QMainWindow):
     def _on_sync_refresh(self) -> None:
         """Callback для обновления GUI при синхронизации."""
         # Обновляем только если сейчас в облаке
+        if self._operation_in_progress:
+            return
         cloud_provider = self._providers.get('cloud')
         if self._current_provider == cloud_provider and self._current_path:
             # Используем тот же механизм, что и кнопка обновления
@@ -1223,32 +1259,6 @@ class MainWindow(QMainWindow):
             self._on_refresh()  # Обновляем список
         except Exception as e:
             QMessageBox.warning(self, "Ошибка", f"Не удалось переименовать: {e}")
-
-    def _download_next(self) -> None:
-        """Скачивание следующего файла из очереди."""
-        if not self._download_queue:
-            self.status_bar.showMessage(f"Скачано {self._download_success} из {self._download_total} файлов")
-            self._notify_download_complete()
-            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
-            return
-
-        file_item = self._download_queue[0]
-        current = self._download_success + 1
-
-        self.status_bar.showMessage(f"Скачивание: {file_item.name} ({current} из {self._download_total})")
-
-        local_path = self._cloud_provider._bridge._get_download_path(file_item.path)
-
-        self._download_worker = DownloadWorker(
-            self._cloud_provider,
-            file_item.path,
-            str(local_path),
-            file_item.size
-        )
-        self._download_worker.progress.connect(self._on_download_progress)
-        self._download_worker.finished.connect(self._on_download_finished)
-        self._download_worker.error.connect(self._on_download_error)
-        self._download_worker.start()
 
     def _on_copy_files(self, items: list) -> None:
         """Копирование файлов (сохраняем в буфер)."""
