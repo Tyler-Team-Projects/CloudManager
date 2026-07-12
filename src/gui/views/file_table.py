@@ -20,7 +20,7 @@ class FileTableModel(QStandardItemModel):
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalHeaderLabels(["Статус", "Имя", "Размер", "Тип"])
+        self.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
         self._items: List[CloudFile] = []
 
     def set_items(self, items: List[CloudFile]) -> None:
@@ -29,13 +29,41 @@ class FileTableModel(QStandardItemModel):
         self.removeRows(0, self.rowCount())
 
         for item in items:
-            # --- КОЛОНКА 0: СТАТУС ---
+            # --- КОЛОНКА 0: ИМЯ ---
+            name_item = QStandardItem(item.name)
+            name_item.setData(item, Qt.ItemDataRole.UserRole)
+            name_item.setEditable(False)
+
+            if item.is_dir:
+                name_item.setIcon(self._get_icon("folder"))
+            else:
+                name_item.setIcon(self._get_file_icon(item.name))
+
+            # --- КОЛОНКА 1: РАЗМЕР ---
+            if item.is_dir:
+                size_str = ""
+            else:
+                size_str = self._format_size(item.size)
+
+            size_item = QStandardItem(size_str)
+            size_item.setEditable(False)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            # --- КОЛОНКА 2: ТИП ---
+            if item.is_dir:
+                type_str = "Папка"
+            else:
+                type_str = item.mime_type or "Файл"
+
+            type_item = QStandardItem(type_str)
+            type_item.setEditable(False)
+
+            # --- КОЛОНКА 3: СТАТУС ---
             status_item = QStandardItem()
             status_item.setEditable(False)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if item.is_dir:
-                # Для папок — пустая ячейка (иконка будет в колонке "Имя")
                 status_item.setIcon(QIcon())
                 status_item.setText("")
                 status_item.setToolTip("Папка")
@@ -63,36 +91,7 @@ class FileTableModel(QStandardItemModel):
                     status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.gray)
 
-            # --- КОЛОНКА 1: ИМЯ ---
-            name_item = QStandardItem(item.name)
-            name_item.setData(item, Qt.ItemDataRole.UserRole)
-            name_item.setEditable(False)
-
-            if item.is_dir:
-                name_item.setIcon(self._get_icon("folder"))
-            else:
-                name_item.setIcon(self._get_file_icon(item.name))
-
-            # --- КОЛОНКА 2: РАЗМЕР ---
-            if item.is_dir:
-                size_str = ""
-            else:
-                size_str = self._format_size(item.size)
-
-            size_item = QStandardItem(size_str)
-            size_item.setEditable(False)
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-            # --- КОЛОНКА 3: ТИП ---
-            if item.is_dir:
-                type_str = "Папка"
-            else:
-                type_str = item.mime_type or "Файл"
-
-            type_item = QStandardItem(type_str)
-            type_item.setEditable(False)
-
-            self.appendRow([status_item, name_item, size_item, type_item])
+            self.appendRow([name_item, size_item, type_item, status_item])
 
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
