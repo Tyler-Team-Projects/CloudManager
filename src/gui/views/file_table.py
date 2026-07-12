@@ -314,10 +314,11 @@ class FileTableView(QWidget):
             list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, item)
 
-            # Формируем отображаемое имя с индикатором статуса
+            # Формируем отображаемое имя
             display_name = item.name
 
-            if not item.is_dir:
+            # Только для облачного провайдера показываем статусы
+            if self._is_cloud_provider and not item.is_dir:
                 is_downloaded = getattr(item, 'is_downloaded', False)
                 is_synced = getattr(item, 'is_synced', False)
 
@@ -331,7 +332,11 @@ class FileTableView(QWidget):
                     display_name = "⬇️ " + display_name
                     list_item.setToolTip(f"{item.name}\n⬇️ Не скачан локально")
             else:
-                list_item.setToolTip(f"{item.name}\n📁 Папка")
+                # Для локального провайдера или папок - без статуса
+                if item.is_dir:
+                    list_item.setToolTip(f"{item.name}\n📁 Папка")
+                else:
+                    list_item.setToolTip(f"{item.name}")
 
             list_item.setText(display_name)
 
@@ -357,7 +362,6 @@ class FileTableView(QWidget):
                 list_item.setToolTip(f"{list_item.toolTip()}\nРазмер: {size_text}")
 
             self.icon_view.addItem(list_item)
-
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -366,18 +370,39 @@ class FileTableView(QWidget):
             size /= 1024
         return f"{size:.1f} PB"
 
-    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider) -> None:
-        """Установка файлов."""
+    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False) -> None:
+        """Установка файлов с указанием типа провайдера."""
         self._current_provider = provider
         self._current_items = files
+        self._is_cloud_provider = is_cloud
+
         self.table_model.set_items(files)
-        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # Принудительно показываем иконки
+
+        header = self.table_view.horizontalHeader()
+
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(1, 180)
+
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(2, 180)
+
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+
+        self._update_status_column_visibility()
+
         if self._view_mode == "icons":
             self._update_icon_view()
+
+    def _update_status_column_visibility(self) -> None:
+        """Показать или скрыть колонку статуса в зависимости от провайдера."""
+        if self._is_cloud_provider:
+            self.table_view.setColumnHidden(3, False)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
         else:
-            # Для таблицы данные уже обновлены через table_model.set_items
-            pass
+            self.table_view.setColumnHidden(3, True)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип"])
 
     def get_selected_items(self) -> List[CloudFile]:
         """Получить выбранные элементы (работает в обоих режимах)."""
