@@ -20,7 +20,7 @@ class FileTableModel(QStandardItemModel):
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
+        self.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"]) # "Тип",
         self._items: List[CloudFile] = []
 
     def set_items(self, items: List[CloudFile]) -> None:
@@ -42,21 +42,24 @@ class FileTableModel(QStandardItemModel):
             # --- КОЛОНКА 1: РАЗМЕР ---
             if item.is_dir:
                 size_str = ""
+                numeric_size = -1  # папки идут первыми при сортировке ↑
             else:
                 size_str = self._format_size(item.size)
+                numeric_size = item.size
 
             size_item = QStandardItem(size_str)
             size_item.setEditable(False)
             size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            size_item.setData(numeric_size, Qt.ItemDataRole.UserRole + 1)  # числовой размер для сортировки
 
             # --- КОЛОНКА 2: ТИП ---
-            if item.is_dir:
-                type_str = "Папка"
-            else:
-                type_str = item.mime_type or "Файл"
-
-            type_item = QStandardItem(type_str)
-            type_item.setEditable(False)
+            # if item.is_dir:
+            #     type_str = "Папка"
+            # else:
+            #     type_str = item.mime_type or "Файл"
+            #
+            # type_item = QStandardItem(type_str)
+            # type_item.setEditable(False)
 
             # --- КОЛОНКА 3: СТАТУС ---
             status_item = QStandardItem()
@@ -91,7 +94,15 @@ class FileTableModel(QStandardItemModel):
                     status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.gray)
 
-            self.appendRow([name_item, size_item, type_item, status_item])
+            self.appendRow([name_item, size_item, status_item]) # type_item,
+
+    def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
+        """Корректная сортировка по размеру и имени."""
+        if column == 1:  # колонка размера
+            self.setSortRole(Qt.ItemDataRole.UserRole + 1)
+        else:
+            self.setSortRole(Qt.ItemDataRole.DisplayRole)
+        super().sort(column, order)
 
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
@@ -380,29 +391,29 @@ class FileTableView(QWidget):
 
         header = self.table_view.horizontalHeader()
 
+        # Колонка 0 – Имя: растягивается
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
 
+        # Колонка 1 – Размер: фиксированная ширина
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table_view.setColumnWidth(1, 180)
+        self.table_view.setColumnWidth(1, 120)
 
+        # Колонка 2 – Статус: фиксированная ширина, видна только для облака
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table_view.setColumnWidth(2, 180)
-
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table_view.setColumnWidth(2, 80)
 
         self._update_status_column_visibility()
 
         if self._view_mode == "icons":
             self._update_icon_view()
-
     def _update_status_column_visibility(self) -> None:
         """Показать или скрыть колонку статуса в зависимости от провайдера."""
         if self._is_cloud_provider:
             self.table_view.setColumnHidden(3, False)
-            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"])
         else:
             self.table_view.setColumnHidden(3, True)
-            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип"])
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", ""])
 
     def get_selected_items(self) -> List[CloudFile]:
         """Получить выбранные элементы (работает в обоих режимах)."""
