@@ -120,7 +120,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         """Настройка основного UI."""
         self.setWindowTitle("Cloud Manager")
-        self.setMinimumSize(1400, 600)
+        self.setMinimumSize(1000, 600)
         self.resize(1200, 800)
 
         central_widget = QWidget()

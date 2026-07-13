@@ -49,7 +49,7 @@ class FileTableModel(QStandardItemModel):
 
             size_item = QStandardItem(size_str)
             size_item.setEditable(False)
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             size_item.setData(numeric_size, Qt.ItemDataRole.UserRole + 1)  # числовой размер для сортировки
 
             # --- КОЛОНКА 2: ТИП ---
@@ -390,15 +390,12 @@ class FileTableView(QWidget):
         self.table_model.set_items(files)
 
         header = self.table_view.horizontalHeader()
-
         # Колонка 0 – Имя: растягивается
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-
         # Колонка 1 – Размер: фиксированная ширина
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.table_view.setColumnWidth(1, 120)
-
-        # Колонка 2 – Статус: фиксированная ширина, видна только для облака
+        # Колонка 2 – Статус: фиксированная ширина, будет скрываться для локального провайдера
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.table_view.setColumnWidth(2, 80)
 
@@ -409,10 +406,10 @@ class FileTableView(QWidget):
     def _update_status_column_visibility(self) -> None:
         """Показать или скрыть колонку статуса в зависимости от провайдера."""
         if self._is_cloud_provider:
-            self.table_view.setColumnHidden(3, False)
+            self.table_view.setColumnHidden(2, False)
             self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"])
         else:
-            self.table_view.setColumnHidden(3, True)
+            self.table_view.setColumnHidden(2, True)
             self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", ""])
 
     def get_selected_items(self) -> List[CloudFile]:
