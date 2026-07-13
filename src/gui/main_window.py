@@ -1,6 +1,7 @@
 """Главное окно приложения."""
 import sys
 import os
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
@@ -54,6 +55,7 @@ class MainWindow(QMainWindow):
         self._clipboard = []
         self._operation_in_progress = False
         self._active_workers = []
+        self._is_current_cloud = False
 
         self._upload_queue = []
         self._upload_success = 0
@@ -70,6 +72,12 @@ class MainWindow(QMainWindow):
         self._delete_success = 0
         self._delete_total = 0
         self._delete_provider = None
+
+        self._update_queue = []
+        self._update_success = 0
+        self._update_total = 0
+        self._update_provider = None
+        self._update_worker = None
 
         self._init_providers()
         self._setup_ui()
@@ -450,14 +458,15 @@ class MainWindow(QMainWindow):
 
     def _on_directory_loaded(self, files: list) -> None:
         """Обработка загрузки директории."""
-        # Проверяем и дополняем статусы для файлов
+        self._is_current_cloud = False
+
         if self._current_provider == self._providers.get('cloud'):
+            self._is_current_cloud = True
             cloud_provider = self._current_provider
             if hasattr(cloud_provider, '_bridge'):
                 bridge = cloud_provider._bridge
                 for file_item in files:
                     if not file_item.is_dir:
-                        # Проверяем наличие файла в Downloads
                         local_file = bridge.downloads_path / file_item.name
                         file_item.is_downloaded = local_file.exists()
 
@@ -467,7 +476,7 @@ class MainWindow(QMainWindow):
                         else:
                             file_item.is_synced = False
 
-        self.file_table.set_files(files, self._current_provider)
+        self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
         self.file_table.set_current_path(self._current_path)
         self.address_bar.set_path(self._current_path)
         self.items_label.setText(f"Элементов: {len(files)}")
@@ -651,6 +660,49 @@ class MainWindow(QMainWindow):
         self._upload_worker.error.connect(self._on_upload_error)
         self._upload_worker.start()
 
+    def _update_next(self) -> None:
+        if not self._update_queue:
+            self.status_bar.showMessage(
+                f"Обновлено {self._update_success} из {self._update_total} файлов"
+            )
+            self._on_refresh()
+            self._notify_update_complete()
+            QTimer.singleShot(10000, self.status_bar.clearMessage)
+            return
+
+        file_item = self._update_queue[0]
+        current = self._update_success + 1
+
+        self.status_bar.showMessage(
+            f"Обновление: {file_item.name} ({current} из {self._update_total})"
+        )
+
+        bridge = self._update_provider._bridge
+        local_path = bridge.downloads_path / file_item.name
+
+        if local_path.exists():
+            try:
+                local_path.unlink()
+                print(f"DEBUG: Удален старый файл: {local_path}")
+            except PermissionError:
+                temp_name = local_path.with_suffix(f".old_{int(time.time())}{local_path.suffix}")
+                local_path.rename(temp_name)
+                print(f"DEBUG: Файл занят, переименован в {temp_name}")
+            except Exception as e:
+                print(f"ERROR: Не удалось удалить {local_path}: {e}")
+
+        # скачиваем заново
+        self._update_worker = DownloadWorker(
+            self._update_provider,
+            file_item.path,
+            str(local_path),
+            file_item.size
+        )
+        self._update_worker.progress.connect(self._on_update_progress)
+        self._update_worker.finished.connect(self._on_update_finished)
+        self._update_worker.error.connect(self._on_update_error)
+        self._update_worker.start()
+
     def _on_upload_progress(self, current: int, total: int) -> None:
         """Обновление прогресса загрузки."""
         if total > 0:
@@ -680,6 +732,72 @@ class MainWindow(QMainWindow):
         if self._upload_queue:
             self._upload_queue.pop(0)
         self._upload_next()
+
+    def _on_update_progress(self, current: int, total: int) -> None:
+        """Обновление прогресса обновления."""
+        if total > 0:
+            current_mb = current / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            percent = int(current / total * 100)
+            file_name = self._update_queue[0].name if self._update_queue else ""
+            self.status_bar.showMessage(
+                f"Обновление: {file_name} - {current_mb:.1f}/{total_mb:.1f} МБ ({percent}%)"
+            )
+        else:
+            current_mb = current / (1024 * 1024)
+            file_name = self._update_queue[0].name if self._update_queue else ""
+            self.status_bar.showMessage(f"Обновление: {file_name} - {current_mb:.1f} МБ")
+
+    def _on_update_finished(self, success: bool, local_path: str, remote_path: str) -> None:
+        """Завершение обновления одного файла."""
+        if self._update_queue:
+            updated_item = self._update_queue.pop(0)
+
+            if success:
+                self._update_success += 1
+                cloud_provider = self._providers.get('cloud')
+                if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                    bridge = cloud_provider._bridge
+                    sync_info = bridge.check_file_sync(remote_path)
+                    updated_item.is_downloaded = True
+                    updated_item.is_synced = sync_info.get('is_synced', False)
+
+                    if os.path.exists(local_path):
+                        bridge.download_metadata[local_path] = {
+                            'remote_path': remote_path,
+                            'downloaded_at': datetime.now().isoformat(),
+                            'size': os.path.getsize(local_path),
+                            'name': Path(local_path).name,
+                            'remote_hash': sync_info.get('remote_hash'),
+                            'local_hash': sync_info.get('local_hash'),
+                            'is_synced': sync_info.get('is_synced', False)
+                        }
+                        bridge._save_metadata()
+
+                    self._update_file_status(remote_path, updated_item)
+
+        self._update_next()
+
+    def _on_update_error(self, error: str) -> None:
+        """Ошибка обновления файла."""
+        print(f"[ERROR] Update failed: {error}")
+        if self._update_queue:
+            self._update_queue.pop(0)
+        self._update_next()
+
+    def _notify_update_complete(self):
+        """Уведомление о завершении обновления."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Обновлено {self._update_success} из {self._update_total} файлов"
+        toast = ToastNotification(
+            "Обновление завершено",
+            msg,
+            "Обновить список",
+            callback=lambda: self._on_refresh(),
+            parent=self
+        )
+        toast.show_at_bottom_right()
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
@@ -802,17 +920,15 @@ class MainWindow(QMainWindow):
 
     def _update_file_status(self, remote_path: str, updated_item: CloudFile) -> None:
         """Обновить статус конкретного файла в таблице."""
-        # Находим файл в текущем списке
         if hasattr(self.file_table, '_current_items'):
             for i, item in enumerate(self.file_table._current_items):
                 if item.path == remote_path:
-                    # Обновляем статусы
                     item.is_downloaded = updated_item.is_downloaded
                     item.is_synced = updated_item.is_synced
-                    # Переустанавливаем файлы в таблице
                     self.file_table.set_files(
                         self.file_table._current_items,
-                        self._current_provider
+                        self._current_provider,
+                        self._is_current_cloud
                     )
                     break
 
@@ -911,12 +1027,10 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        # Проверка: нельзя обновлять в mounts://
         if self._current_path == "mounts://":
             QMessageBox.warning(self, "Ошибка", "Обновление запрещено в корневой директории")
             return
 
-        # Проверка: обновление только в облачной папке
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Обновление доступно только в облачной папке")
             return
@@ -926,14 +1040,11 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
-        bridge = cloud_provider._bridge
-
-        # Подтверждение обновления
         names = [f.name for f in files]
         reply = QMessageBox.question(
             self,
             "Подтверждение обновления",
-            f"Обновить локальные копии файлов?\n\n{', '.join(names[:5])}"
+            f"Обновить локальную копию файла?\n\n{', '.join(names[:5])}"
             + (f"\n... и ещё {len(names) - 5}" if len(names) > 5 else ""),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
@@ -941,47 +1052,14 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # Показываем прогресс
-        progress = ProgressDialog("Обновление файлов", self)
-        progress.set_cancellable(False)
-        progress.show()
+        self._update_queue = files.copy()
+        self._update_success = 0
+        self._update_total = len(files)
+        self._update_provider = cloud_provider
 
-        success_count = 0
-        for i, file_item in enumerate(files):
-            progress.set_status(
-                f"Обновление: {file_item.name}",
-                f"{i + 1} из {len(files)}"
-            )
-
-            try:
-                # Скачиваем с перезаписью
-                local_path = bridge.downloads_path / file_item.name
-                success = bridge.download_file(
-                    file_item.path,
-                    local_path,
-                    force_overwrite=True  # ← КЛЮЧЕВОЙ ПАРАМЕТР!
-                )
-
-                if success:
-                    # Обновляем статус
-                    sync_info = bridge.check_file_sync(file_item.path)
-                    file_item.is_downloaded = True
-                    file_item.is_synced = sync_info.get('is_synced', False)
-                    success_count += 1
-
-            except Exception as e:
-                print(f"Ошибка обновления {file_item.name}: {e}")
-                QMessageBox.warning(
-                    self,
-                    "Ошибка",
-                    f"Не удалось обновить {file_item.name}: {e}"
-                )
-
-        progress.operation_finished(True)
-        self.status_bar.showMessage(f"Обновлено {success_count} из {len(files)} файлов")
-
-        # Обновляем список
-        self._on_refresh()
+        if self._update_queue:
+            self.status_bar.showMessage(f"Обновление 0 из {self._update_total}...")
+            self._update_next()
 
     def _on_files_download(self, files: list) -> None:
         """Скачивание файлов через сигнал."""
@@ -989,24 +1067,20 @@ class MainWindow(QMainWindow):
 
     def _on_delete(self, items=None) -> None:
         """Асинхронное удаление выбранных файлов."""
-        # Если items не передан (кнопка тулбара / Del), берём выделенные
         self._operation_in_progress = True
         if items is None or isinstance(items, bool):
             if self._current_path == "mounts://":
                 QMessageBox.warning(self, "Ошибка", "Удаление запрещено в корневой директории")
                 return
             items = self.file_table.get_selected_items()
-        # Если передан список – используем его
         elif isinstance(items, list):
             pass
         else:
-            # Пришёл bool или другой тип – игнорируем (защита от сигнала QAction)
             return
 
         if not items:
             return
 
-        # Защита от удаления системных элементов
         for item in items:
             if item.path == "mounts://" or item.name in ["Домашняя папка", "Корень (/)", "/home"]:
                 QMessageBox.warning(self, "Ошибка", f"Нельзя удалить системный элемент: {item.name}")
@@ -1089,17 +1163,16 @@ class MainWindow(QMainWindow):
         self.address_bar.search_btn.setEnabled(True)
 
         if results:
-            # Сохраняем исходный путь для кнопки "вверх"
             self._search_mode = True
             self._search_results = results
-            self._pre_search_path = self._current_path  # Запоминаем путь до поиска
+            self._pre_search_path = self._current_path
 
-            self.file_table.set_files(results, self._current_provider)
+            is_cloud = (self._current_provider == self._providers.get('cloud'))
+            self.file_table.set_files(results, self._current_provider, is_cloud)
             self.items_label.setText(f"Найдено: {len(results)}")
             self.status_bar.showMessage(f"Найдено {len(results)} элементов")
             self.address_bar.set_path(f"Результаты поиска ({len(results)})")
 
-            # Кнопка "вверх" должна возвращать к папке, где был поиск
             self.address_bar.up_btn.setEnabled(True)
         else:
             QMessageBox.information(self, "Поиск", "Ничего не найдено")

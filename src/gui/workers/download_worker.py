@@ -15,7 +15,7 @@ class DownloadWorker(QThread):
     """Фоновое скачивание файла."""
 
     progress = pyqtSignal(int, int)  # current_size, total_size
-    finished = pyqtSignal(bool, str, str)  # success, local_path, remote_path  # ← ИЗМЕНЕНО
+    finished = pyqtSignal(bool, str, str)  # success, local_path, remote_path
     error = pyqtSignal(str)
     cancelled = pyqtSignal()
 
