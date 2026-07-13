@@ -54,6 +54,7 @@ class MainWindow(QMainWindow):
         self._pre_search_path = ""
         self._clipboard = []
         self._operation_in_progress = False
+        self._is_current_cloud = False
 
         self._upload_queue = []
         self._upload_success = 0
@@ -443,14 +444,15 @@ class MainWindow(QMainWindow):
 
     def _on_directory_loaded(self, files: list) -> None:
         """Обработка загрузки директории."""
-        # Проверяем и дополняем статусы для файлов
+        self._is_current_cloud = False
+
         if self._current_provider == self._providers.get('cloud'):
+            self._is_current_cloud = True
             cloud_provider = self._current_provider
             if hasattr(cloud_provider, '_bridge'):
                 bridge = cloud_provider._bridge
                 for file_item in files:
                     if not file_item.is_dir:
-                        # Проверяем наличие файла в Downloads
                         local_file = bridge.downloads_path / file_item.name
                         file_item.is_downloaded = local_file.exists()
 
@@ -460,7 +462,7 @@ class MainWindow(QMainWindow):
                         else:
                             file_item.is_synced = False
 
-        self.file_table.set_files(files, self._current_provider)
+        self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
         self.file_table.set_current_path(self._current_path)
         self.address_bar.set_path(self._current_path)
         self.items_label.setText(f"Элементов: {len(files)}")
@@ -901,17 +903,15 @@ class MainWindow(QMainWindow):
 
     def _update_file_status(self, remote_path: str, updated_item: CloudFile) -> None:
         """Обновить статус конкретного файла в таблице."""
-        # Находим файл в текущем списке
         if hasattr(self.file_table, '_current_items'):
             for i, item in enumerate(self.file_table._current_items):
                 if item.path == remote_path:
-                    # Обновляем статусы
                     item.is_downloaded = updated_item.is_downloaded
                     item.is_synced = updated_item.is_synced
-                    # Переустанавливаем файлы в таблице
                     self.file_table.set_files(
                         self.file_table._current_items,
-                        self._current_provider
+                        self._current_provider,
+                        self._is_current_cloud
                     )
                     break
 
@@ -1127,17 +1127,16 @@ class MainWindow(QMainWindow):
         self.address_bar.search_btn.setEnabled(True)
 
         if results:
-            # Сохраняем исходный путь для кнопки "вверх"
             self._search_mode = True
             self._search_results = results
-            self._pre_search_path = self._current_path  # Запоминаем путь до поиска
+            self._pre_search_path = self._current_path
 
-            self.file_table.set_files(results, self._current_provider)
+            is_cloud = (self._current_provider == self._providers.get('cloud'))
+            self.file_table.set_files(results, self._current_provider, is_cloud)
             self.items_label.setText(f"Найдено: {len(results)}")
             self.status_bar.showMessage(f"Найдено {len(results)} элементов")
             self.address_bar.set_path(f"Результаты поиска ({len(results)})")
 
-            # Кнопка "вверх" должна возвращать к папке, где был поиск
             self.address_bar.up_btn.setEnabled(True)
         else:
             QMessageBox.information(self, "Поиск", "Ничего не найдено")
