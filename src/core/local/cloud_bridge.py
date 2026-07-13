@@ -578,6 +578,28 @@ class CloudBridge:
         """Проверка статуса синхронизации."""
         return self._sync_watcher is not None and self._sync_watcher.is_running()
 
+    def get_disk_info(self) -> dict:
+        """Получить информацию о диске (всего, использовано, свободно)."""
+        if not self.provider:
+            return {'total': 0, 'used': 0, 'free': 0, 'percent': 0}
+
+        try:
+            # Получаем информацию через API
+            info = self.provider.client.api.get_disk_info()
+            total = info.total_space
+            used = info.used_space
+            free = total - used
+            percent = int((used / total) * 100) if total > 0 else 0
+            return {
+                'total': total,
+                'used': used,
+                'free': free,
+                'percent': percent
+            }
+        except Exception as e:
+            print(f"Ошибка получения информации о диске: {e}")
+            return {'total': 0, 'used': 0, 'free': 0, 'percent': 0}
+
     def _get_remote_hash(self, remote_path: str) -> Optional[str]:
         """
         Получить хеш файла с облака.

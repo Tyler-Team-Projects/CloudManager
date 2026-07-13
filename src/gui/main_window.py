@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Optional, Dict
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QSplitter,
+    QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout,
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
     QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar,
     QSystemTrayIcon, QDialog, QApplication
@@ -56,6 +56,7 @@ class MainWindow(QMainWindow):
         self._operation_in_progress = False
         self._active_workers = []
         self._is_current_cloud = False
+        self._disk_info_timer = None
 
         self._upload_queue = []
         self._upload_success = 0
@@ -258,6 +259,44 @@ class MainWindow(QMainWindow):
         self.address_bar.setMaximumWidth(600)
         self.toolbar.addWidget(self.address_bar)
 
+        self.toolbar.addSeparator()
+
+        # Информации о Яндекс.Диске
+        self.disk_info_widget = QWidget()
+        disk_layout = QHBoxLayout(self.disk_info_widget)
+        disk_layout.setContentsMargins(0, 0, 0, 0)
+        disk_layout.setSpacing(8)
+
+        self.disk_label = QLabel("Яндекс.Диск: 0 / 0")
+        self.disk_label.setStyleSheet("font-size: 14px; color: #555;")
+
+        # Прогресс-бар
+        self.disk_progress = QProgressBar()
+        self.disk_progress.setFixedSize(180, 20)
+        self.disk_progress.setTextVisible(False)
+        self.disk_progress.setRange(0, 100)
+        self.disk_progress.setValue(0)
+        self.disk_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #ccc;
+                border-radius: 8px;
+                background-color: #f0f0f0;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                border-radius: 8px;
+            }
+        """)
+
+        disk_layout.addWidget(self.disk_label)
+        disk_layout.addWidget(self.disk_progress)
+        disk_layout.addStretch()
+
+        spacer_before = QWidget()
+        spacer_before.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.toolbar.addWidget(spacer_before)
+
+        self.toolbar.addWidget(self.disk_info_widget)
         self.toolbar.addSeparator()
 
         # Растягиваем тулбар
@@ -475,6 +514,14 @@ class MainWindow(QMainWindow):
                             file_item.is_synced = sync_info.get('is_synced', False)
                         else:
                             file_item.is_synced = False
+
+        if self._is_current_cloud:
+            self._update_disk_info()
+            self._start_disk_info_timer()
+        else:
+            self._stop_disk_info_timer()
+            self.disk_label.setText("Яндекс.Диск: не активен")
+            self.disk_progress.setValue(0)
 
         self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
         self.file_table.set_current_path(self._current_path)
@@ -724,6 +771,7 @@ class MainWindow(QMainWindow):
             self._upload_queue.pop(0)
         if success:
             self._upload_success += 1
+            self._update_disk_info()
         self._upload_next()
 
     def _on_upload_error(self, error: str) -> None:
@@ -1130,6 +1178,7 @@ class MainWindow(QMainWindow):
         """Обработка успешного удаления одного файла."""
         if success:
             self._delete_success += 1
+            self._update_disk_info()
         self._delete_next()
 
     def _on_delete_error(self, error: str, path: str) -> None:
@@ -1195,7 +1244,8 @@ class MainWindow(QMainWindow):
             if token:
                 from api.providers.yadisk.auth_manager import AuthManager
                 AuthManager.save_token(token)
-
+                self._update_disk_info()
+                self._start_disk_info_timer()
                 cloud_provider = self._providers.get('cloud')
                 if cloud_provider and hasattr(cloud_provider, 'setup_token'):
                     # Передаём callback для обновления
@@ -1231,6 +1281,91 @@ class MainWindow(QMainWindow):
             self.sync_label.setText("Синхр: выкл")
             self.sync_label.setStyleSheet("color: #757575; padding: 0 8px;")
 
+    def _update_disk_info(self) -> None:
+        """Обновить информацию о занятом месте на Яндекс.Диске."""
+        cloud_provider = self._providers.get('cloud')
+
+        if not self._is_current_cloud or not cloud_provider:
+            self.disk_info_widget.setVisible(False)
+            return
+
+        self.disk_info_widget.setVisible(True)
+
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            self.disk_label.setText("Яндекс.Диск: не подключен")
+            self.disk_progress.setValue(0)
+            return
+
+        if not cloud_provider.has_token():
+            self.disk_label.setText("Яндекс.Диск: не авторизован")
+            self.disk_progress.setValue(0)
+            return
+
+        try:
+            info = cloud_provider._bridge.get_disk_info()
+            total_gb = info['total'] / (1024 ** 3)
+            used_gb = info['used'] / (1024 ** 3)
+            percent = info['percent']
+
+            self.disk_label.setText(f"Яндекс.Диск: {used_gb:.1f} ГБ / {total_gb:.1f} ГБ")
+            self.disk_progress.setValue(percent)
+
+            # Меняем цвет в зависимости от заполненности
+            if percent > 90:
+                self.disk_progress.setStyleSheet("""
+                    QProgressBar {
+                        border: 1px solid #ccc;
+                        border-radius: 8px;
+                        background-color: #f0f0f0;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #f44336;
+                        border-radius: 8px;
+                    }
+                """)
+            elif percent > 75:
+                self.disk_progress.setStyleSheet("""
+                    QProgressBar {
+                        border: 1px solid #ccc;
+                        border-radius: 8px;
+                        background-color: #f0f0f0;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #ff9800;
+                        border-radius: 8px;
+                    }
+                """)
+            else:
+                self.disk_progress.setStyleSheet("""
+                    QProgressBar {
+                        border: 1px solid #ccc;
+                        border-radius: 8px;
+                        background-color: #f0f0f0;
+                    }
+                    QProgressBar::chunk {
+                        background-color: #4CAF50;
+                        border-radius: 8px;
+                    }
+                """)
+
+        except Exception as e:
+            print(f"Ошибка обновления информации о диске: {e}")
+            self.disk_label.setText("Яндекс.Диск: ошибка")
+            self.disk_progress.setValue(0)
+
+    def _start_disk_info_timer(self) -> None:
+        """Запустить таймер обновления информации о диске."""
+        if self._disk_info_timer is None:
+            self._disk_info_timer = QTimer()
+            self._disk_info_timer.timeout.connect(self._update_disk_info)
+            self._disk_info_timer.start(30000)  # 30 секунд
+
+    def _stop_disk_info_timer(self) -> None:
+        """Остановить таймер обновления информации о диске."""
+        if self._disk_info_timer is not None:
+            self._disk_info_timer.stop()
+            self._disk_info_timer = None
+
     def _update_auth_status(self) -> None:
         """Обновление статуса авторизации в меню."""
         if not hasattr(self, 'status_action'):
@@ -1262,6 +1397,8 @@ class MainWindow(QMainWindow):
 
         if reply == QMessageBox.StandardButton.Yes:
             cloud_provider = self._providers.get('cloud')
+            self._stop_disk_info_timer()
+            self._update_disk_info()
 
             # Останавливаем синхронизацию перед выходом
             if cloud_provider and hasattr(cloud_provider, '_bridge'):
