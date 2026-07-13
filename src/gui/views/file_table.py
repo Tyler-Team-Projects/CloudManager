@@ -5,7 +5,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QTableView, QHeaderView,
     QAbstractItemView, QMenu, QListWidget, QListWidgetItem,
-    QStackedWidget, QInputDialog
+    QStackedWidget, QInputDialog, QStyle, QApplication
 )
 from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize
 
@@ -20,7 +20,7 @@ class FileTableModel(QStandardItemModel):
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalHeaderLabels(["Статус", "Имя", "Размер", "Тип"])
+        self.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
         self._items: List[CloudFile] = []
 
     def set_items(self, items: List[CloudFile]) -> None:
@@ -29,13 +29,41 @@ class FileTableModel(QStandardItemModel):
         self.removeRows(0, self.rowCount())
 
         for item in items:
-            # --- КОЛОНКА 0: СТАТУС ---
+            # --- КОЛОНКА 0: ИМЯ ---
+            name_item = QStandardItem(item.name)
+            name_item.setData(item, Qt.ItemDataRole.UserRole)
+            name_item.setEditable(False)
+
+            if item.is_dir:
+                name_item.setIcon(self._get_icon("folder"))
+            else:
+                name_item.setIcon(self._get_file_icon(item.name))
+
+            # --- КОЛОНКА 1: РАЗМЕР ---
+            if item.is_dir:
+                size_str = ""
+            else:
+                size_str = self._format_size(item.size)
+
+            size_item = QStandardItem(size_str)
+            size_item.setEditable(False)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+            # --- КОЛОНКА 2: ТИП ---
+            if item.is_dir:
+                type_str = "Папка"
+            else:
+                type_str = item.mime_type or "Файл"
+
+            type_item = QStandardItem(type_str)
+            type_item.setEditable(False)
+
+            # --- КОЛОНКА 3: СТАТУС ---
             status_item = QStandardItem()
             status_item.setEditable(False)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if item.is_dir:
-                # Для папок — пустая ячейка (иконка будет в колонке "Имя")
                 status_item.setIcon(QIcon())
                 status_item.setText("")
                 status_item.setToolTip("Папка")
@@ -63,36 +91,7 @@ class FileTableModel(QStandardItemModel):
                     status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.gray)
 
-            # --- КОЛОНКА 1: ИМЯ ---
-            name_item = QStandardItem(item.name)
-            name_item.setData(item, Qt.ItemDataRole.UserRole)
-            name_item.setEditable(False)
-
-            if item.is_dir:
-                name_item.setIcon(QIcon.fromTheme("folder"))
-            else:
-                name_item.setIcon(self._get_file_icon(item.name))
-
-            # --- КОЛОНКА 2: РАЗМЕР ---
-            if item.is_dir:
-                size_str = ""
-            else:
-                size_str = self._format_size(item.size)
-
-            size_item = QStandardItem(size_str)
-            size_item.setEditable(False)
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-            # --- КОЛОНКА 3: ТИП ---
-            if item.is_dir:
-                type_str = "Папка"
-            else:
-                type_str = item.mime_type or "Файл"
-
-            type_item = QStandardItem(type_str)
-            type_item.setEditable(False)
-
-            self.appendRow([status_item, name_item, size_item, type_item])
+            self.appendRow([name_item, size_item, type_item, status_item])
 
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
@@ -105,11 +104,14 @@ class FileTableModel(QStandardItemModel):
     def _get_file_icon(self, filename: str) -> QIcon:
         """Получить иконку по расширению файла."""
         ext = Path(filename).suffix.lower()
+
         icon_map = {
             '.jpg': QIcon.fromTheme("image-x-generic"),
             '.jpeg': QIcon.fromTheme("image-x-generic"),
             '.png': QIcon.fromTheme("image-x-generic"),
             '.gif': QIcon.fromTheme("image-x-generic"),
+            '.bmp': QIcon.fromTheme("image-x-generic"),
+            '.webp': QIcon.fromTheme("image-x-generic"),
             '.pdf': QIcon.fromTheme("application-pdf"),
             '.doc': QIcon.fromTheme("application-msword"),
             '.docx': QIcon.fromTheme("application-msword"),
@@ -117,8 +119,38 @@ class FileTableModel(QStandardItemModel):
             '.xlsx': QIcon.fromTheme("application-vnd.ms-excel"),
             '.mp3': QIcon.fromTheme("audio-x-generic"),
             '.mp4': QIcon.fromTheme("video-x-generic"),
+            '.avi': QIcon.fromTheme("video-x-generic"),
+            '.mkv': QIcon.fromTheme("video-x-generic"),
+            '.mov': QIcon.fromTheme("video-x-generic"),
+            '.zip': QIcon.fromTheme("package-x-generic"),
+            '.rar': QIcon.fromTheme("package-x-generic"),
+            '.7z': QIcon.fromTheme("package-x-generic"),
+            '.tar': QIcon.fromTheme("package-x-generic"),
+            '.gz': QIcon.fromTheme("package-x-generic"),
         }
-        return icon_map.get(ext, QIcon.fromTheme("text-x-generic"))
+
+        icon = icon_map.get(ext, QIcon.fromTheme("text-x-generic"))
+
+        if icon.isNull():
+            style = QApplication.style()
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+
+        return icon
+
+    def _get_icon(self, name: str) -> QIcon:
+        """Получить иконку (работает на всех платформах)."""
+        icon = QIcon.fromTheme(name)
+        if not icon.isNull():
+            return icon
+
+        style = QApplication.style()
+
+        if name == "folder":
+            return style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        elif name == "file":
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        else:
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def get_item(self, row: int) -> Optional[CloudFile]:
         """Получить элемент по строке."""
@@ -146,6 +178,7 @@ class FileTableView(QWidget):
         self._view_mode = "icons"
         self._current_display_path = ""
         self._clipboard_items: List[CloudFile] = []
+        self._is_cloud_provider = False
         self._setup_ui()
         self._setup_context_menu()
 
@@ -160,7 +193,7 @@ class FileTableView(QWidget):
         self.icon_view = QListWidget()
         self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
         self.icon_view.setIconSize(QSize(64, 64))
-        self.icon_view.setGridSize(QSize(140, 140))
+        self.icon_view.setGridSize(QSize(160, 160))
         self.icon_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.icon_view.setMovement(QListWidget.Movement.Static)
         self.icon_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -281,10 +314,11 @@ class FileTableView(QWidget):
             list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, item)
 
-            # Формируем отображаемое имя с индикатором статуса
+            # Формируем отображаемое имя
             display_name = item.name
 
-            if not item.is_dir:
+            # Только для облачного провайдера показываем статусы
+            if self._is_cloud_provider and not item.is_dir:
                 is_downloaded = getattr(item, 'is_downloaded', False)
                 is_synced = getattr(item, 'is_synced', False)
 
@@ -298,13 +332,17 @@ class FileTableView(QWidget):
                     display_name = "⬇️ " + display_name
                     list_item.setToolTip(f"{item.name}\n⬇️ Не скачан локально")
             else:
-                list_item.setToolTip(f"{item.name}\n📁 Папка")
+                # Для локального провайдера или папок - без статуса
+                if item.is_dir:
+                    list_item.setToolTip(f"{item.name}\n📁 Папка")
+                else:
+                    list_item.setToolTip(f"{item.name}")
 
             list_item.setText(display_name)
 
             # Иконка
             if item.is_dir:
-                list_item.setIcon(QIcon.fromTheme("folder"))
+                list_item.setIcon(self._get_icon("folder"))
             else:
                 # Для изображений показываем миниатюру
                 ext = Path(item.name).suffix.lower()
@@ -316,7 +354,7 @@ class FileTableView(QWidget):
                     list_item.setIcon(icon)
                 else:
                     # Для облачных файлов или других типов - стандартная иконка
-                    list_item.setIcon(QIcon.fromTheme("text-x-generic"))
+                    list_item.setIcon(self._get_icon("file"))
 
             # Добавляем размер под иконкой
             if not item.is_dir:
@@ -324,7 +362,6 @@ class FileTableView(QWidget):
                 list_item.setToolTip(f"{list_item.toolTip()}\nРазмер: {size_text}")
 
             self.icon_view.addItem(list_item)
-
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -333,18 +370,39 @@ class FileTableView(QWidget):
             size /= 1024
         return f"{size:.1f} PB"
 
-    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider) -> None:
-        """Установка файлов."""
+    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False) -> None:
+        """Установка файлов с указанием типа провайдера."""
         self._current_provider = provider
         self._current_items = files
+        self._is_cloud_provider = is_cloud
+
         self.table_model.set_items(files)
-        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # Принудительно показываем иконки
+
+        header = self.table_view.horizontalHeader()
+
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(1, 180)
+
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(2, 180)
+
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+
+        self._update_status_column_visibility()
+
         if self._view_mode == "icons":
             self._update_icon_view()
+
+    def _update_status_column_visibility(self) -> None:
+        """Показать или скрыть колонку статуса в зависимости от провайдера."""
+        if self._is_cloud_provider:
+            self.table_view.setColumnHidden(3, False)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип", "Статус"])
         else:
-            # Для таблицы данные уже обновлены через table_model.set_items
-            pass
+            self.table_view.setColumnHidden(3, True)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Тип"])
 
     def get_selected_items(self) -> List[CloudFile]:
         """Получить выбранные элементы (работает в обоих режимах)."""
@@ -602,6 +660,23 @@ class FileTableView(QWidget):
     def set_current_path(self, path: str) -> None:
         """Установить текущий путь (для проверки mounts://)."""
         self._current_display_path = path
+
+    def _get_icon(self, name: str) -> QIcon:
+        """Получить иконку (работает на всех платформах)."""
+        # пробуем из темы
+        icon = QIcon.fromTheme(name)
+        if not icon.isNull():
+            return icon
+
+        # иначе используем стандартную Qt
+        style = QApplication.style()
+
+        if name == "folder":
+            return style.standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+        elif name == "file":
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
+        else:
+            return style.standardIcon(QStyle.StandardPixmap.SP_FileIcon)
 
     def _get_thumbnail(self, file_path: str, size: int = 128) -> QIcon:
         """Получить миниатюру изображения."""
