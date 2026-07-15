@@ -515,13 +515,18 @@ class MainWindow(QMainWindow):
                         else:
                             file_item.is_synced = False
 
+        # Управление отображением элементов Яндекс.Диска
         if self._is_current_cloud:
+            self.disk_info_widget.setVisible(True)
+            self.disk_label.setVisible(True)
+            self.disk_progress.setVisible(True)
             self._update_disk_info()
             self._start_disk_info_timer()
         else:
             self._stop_disk_info_timer()
-            self.disk_label.setText("Яндекс.Диск: не активен")
-            self.disk_progress.setValue(0)
+            self.disk_info_widget.setVisible(False)
+            self.disk_label.setVisible(False)
+            self.disk_progress.setVisible(False)
 
         self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
         self.file_table.set_current_path(self._current_path)
@@ -1287,11 +1292,15 @@ class MainWindow(QMainWindow):
 
         if not self._is_current_cloud or not cloud_provider:
             self.disk_info_widget.setVisible(False)
+            self.disk_label.setVisible(False)
+            self.disk_progress.setVisible(False)
             return
 
         self.disk_info_widget.setVisible(True)
+        self.disk_label.setVisible(True)
+        self.disk_progress.setVisible(True)
 
-        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+        if not hasattr(cloud_provider, '_bridge'):
             self.disk_label.setText("Яндекс.Диск: не подключен")
             self.disk_progress.setValue(0)
             return
@@ -1310,43 +1319,24 @@ class MainWindow(QMainWindow):
             self.disk_label.setText(f"Яндекс.Диск: {used_gb:.1f} ГБ / {total_gb:.1f} ГБ")
             self.disk_progress.setValue(percent)
 
-            # Меняем цвет в зависимости от заполненности
             if percent > 90:
-                self.disk_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 1px solid #ccc;
-                        border-radius: 8px;
-                        background-color: #f0f0f0;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #f44336;
-                        border-radius: 8px;
-                    }
-                """)
+                color = "#f44336"
             elif percent > 75:
-                self.disk_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 1px solid #ccc;
-                        border-radius: 8px;
-                        background-color: #f0f0f0;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #ff9800;
-                        border-radius: 8px;
-                    }
-                """)
+                color = "#ff9800"
             else:
-                self.disk_progress.setStyleSheet("""
-                    QProgressBar {
-                        border: 1px solid #ccc;
-                        border-radius: 8px;
-                        background-color: #f0f0f0;
-                    }
-                    QProgressBar::chunk {
-                        background-color: #4CAF50;
-                        border-radius: 8px;
-                    }
-                """)
+                color = "#4CAF50"
+
+            self.disk_progress.setStyleSheet(f"""
+                QProgressBar {{
+                    border: 1px solid #ccc;
+                    border-radius: 8px;
+                    background-color: #f0f0f0;
+                }}
+                QProgressBar::chunk {{
+                    background-color: {color};
+                    border-radius: 8px;
+                }}
+            """)
 
         except Exception as e:
             print(f"Ошибка обновления информации о диске: {e}")
