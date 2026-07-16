@@ -9,13 +9,14 @@ from api.common.base_provider import BaseCloudProvider
 class DeleteWorker(QThread):
     """Фоновое удаление файла."""
 
-    finished = pyqtSignal(bool, str)  # success, path
+    finished = pyqtSignal(bool, str, int)  # success, path
     error = pyqtSignal(str, str)      # error_message, path
 
-    def __init__(self, provider: BaseCloudProvider, remote_path: str):
+    def __init__(self, provider: BaseCloudProvider, remote_path: str, file_size: int = 0):
         super().__init__()
         self.provider = provider
         self.remote_path = remote_path
+        self.file_size = file_size
 
     def run(self) -> None:
         """Выполнение удаления."""
