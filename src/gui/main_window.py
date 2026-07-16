@@ -57,6 +57,8 @@ class MainWindow(QMainWindow):
         self._active_workers = []
         self._is_current_cloud = False
         self._disk_info_timer = None
+        self._cached_disk_info = None
+        self._disk_info_cache_timer = None
 
         self._upload_queue = []
         self._upload_success = 0
@@ -272,7 +274,7 @@ class MainWindow(QMainWindow):
 
         # Прогресс-бар
         self.disk_progress = QProgressBar()
-        self.disk_progress.setFixedSize(180, 20)
+        self.disk_progress.setFixedSize(200, 20)
         self.disk_progress.setTextVisible(False)
         self.disk_progress.setRange(0, 100)
         self.disk_progress.setValue(0)
@@ -654,7 +656,6 @@ class MainWindow(QMainWindow):
 
     def _on_upload(self) -> None:
         """Асинхронная загрузка файлов на диск (в облако)."""
-        # Наши проверки
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
             return
@@ -670,13 +671,29 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
+        files_to_upload = []
+        total_size = 0
+
+        for file_path in files:
+            file_size = os.path.getsize(file_path)
+            total_size += file_size
+
+            # нужно ли проверять место для этого файла
+            if self._need_check_disk_space(file_size):
+                is_enough, free_space, message = self._check_available_space(file_size)
+                if not is_enough:
+                    QMessageBox.warning(self, "Недостаточно места", message)
+                    return
+
+            files_to_upload.append(file_path)
+
+        # Если все файлы прошли проверку - загружаем
         self._operation_in_progress = True
-        # Асинхронная загрузка
-        self._upload_queue = [Path(f) for f in files]
+        self._upload_queue = [Path(f) for f in files_to_upload]
         self._upload_success = 0
         self._upload_total = len(self._upload_queue)
         self._upload_provider = self._current_provider
-        self._upload_dest_path = self._current_path  # Для уведомления
+        self._upload_dest_path = self._current_path
 
         if self._upload_queue:
             self._upload_dest_path = self._current_path
@@ -773,10 +790,13 @@ class MainWindow(QMainWindow):
     def _on_upload_finished(self, success: bool, remote_path: str) -> None:
         """Файл успешно загружен."""
         if self._upload_queue:
-            self._upload_queue.pop(0)
-        if success:
-            self._upload_success += 1
-            self._update_disk_info()
+            uploaded_item = self._upload_queue.pop(0)
+            if success:
+                self._upload_success += 1
+                if uploaded_item:
+                    file_size = uploaded_item.stat().st_size
+                    self._update_disk_cache_after_operation(file_size, is_upload=True)
+                self._update_disk_info()
         self._upload_next()
 
     def _on_upload_error(self, error: str) -> None:
@@ -1179,17 +1199,24 @@ class MainWindow(QMainWindow):
         self._delete_worker.error.connect(self._on_delete_error)
         self._delete_worker.start()
 
-    def _on_delete_finished(self, success: bool, path: str) -> None:
+    def _on_delete_finished(self, success: bool, path: str, file_size: int) -> None:
         """Обработка успешного удаления одного файла."""
         if success:
             self._delete_success += 1
-            self._update_disk_info()
+            if file_size > 0:
+                self._update_disk_cache_after_operation(file_size, is_upload=False)
+            else:
+                self._update_disk_info()
         self._delete_next()
 
     def _on_delete_error(self, error: str, path: str) -> None:
         """Ошибка удаления файла."""
         print(f"[ERROR] Delete failed for {path}: {error}")
         self._delete_next()
+
+    def _refresh_disk_cache(self) -> None:
+        """Принудительно обновить кэш из API."""
+        self._update_disk_info()
 
     def _open_file(self, file_item: CloudFile) -> None:
         """Открытие файла."""
@@ -1312,6 +1339,8 @@ class MainWindow(QMainWindow):
 
         try:
             info = cloud_provider._bridge.get_disk_info()
+            self._cached_disk_info = info.copy()
+
             total_gb = info['total'] / (1024 ** 3)
             used_gb = info['used'] / (1024 ** 3)
             percent = info['percent']
@@ -1347,7 +1376,7 @@ class MainWindow(QMainWindow):
         """Запустить таймер обновления информации о диске."""
         if self._disk_info_timer is None:
             self._disk_info_timer = QTimer()
-            self._disk_info_timer.timeout.connect(self._update_disk_info)
+            self._disk_info_timer.timeout.connect(self._refresh_disk_cache)
             self._disk_info_timer.start(30000)  # 30 секунд
 
     def _stop_disk_info_timer(self) -> None:
@@ -1355,6 +1384,94 @@ class MainWindow(QMainWindow):
         if self._disk_info_timer is not None:
             self._disk_info_timer.stop()
             self._disk_info_timer = None
+
+    def _get_cached_disk_info(self) -> Optional[dict]:
+        """Получить кэшированную информацию о диске."""
+        return self._cached_disk_info
+
+    def _update_disk_cache_after_operation(self, file_size: int, is_upload: bool = True) -> None:
+        """Обновить кэш после загрузки или удаления файла."""
+        if not self._cached_disk_info:
+            return
+
+        if is_upload:
+            # Загрузка: уменьшаем свободное место
+            self._cached_disk_info['used'] += file_size
+            self._cached_disk_info['free'] -= file_size
+        else:
+            # Удаление: увеличиваем свободное место
+            self._cached_disk_info['used'] -= file_size
+            self._cached_disk_info['free'] += file_size
+
+        # Пересчитываем процент
+        total = self._cached_disk_info['total']
+        if total > 0:
+            self._cached_disk_info['percent'] = int((self._cached_disk_info['used'] / total) * 100)
+
+    def _need_check_disk_space(self, file_size: int) -> bool:
+        """
+        Определить, нужно ли проверять место на диске перед загрузкой.
+
+        Args:
+            file_size: размер файла в байтах
+
+        Returns:
+            True — нужно проверить (файл большой или диск почти полон)
+            False — можно загружать без проверки
+        """
+        # Если нет кэша — проверяем (на всякий случай)
+        if not self._cached_disk_info:
+            return True
+
+        free_space = self._cached_disk_info['free']
+
+        # Если свободно меньше 1 ГБ — всегда проверяем (критично)
+        if free_space < 1 * 1024 * 1024 * 1024:  # 1 ГБ
+            return True
+
+        # Проверяем динамический порог: файл > 50% свободного места
+        threshold = free_space * 0.5
+        return file_size > threshold
+
+    def _check_available_space(self, file_size: int) -> tuple:
+        """
+        Проверить, достаточно ли места на диске.
+
+        Returns:
+            (is_enough: bool, free_space: int, message: str)
+        """
+        # Получаем актуальные данные (свежий запрос)
+        cloud_provider = self._providers.get('cloud')
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            return (False, 0, "Облачный провайдер не доступен")
+
+        try:
+            info = cloud_provider._bridge.get_disk_info()
+            free_space = info['free']
+
+            if file_size > free_space:
+                # Форматируем размеры для удобного отображения
+                file_size_gb = file_size / (1024 ** 3)
+                free_space_gb = free_space / (1024 ** 3)
+
+                # Определяем, сколько нужно освободить
+                need_to_free = file_size - free_space
+                need_to_free_gb = need_to_free / (1024 ** 3)
+
+                message = (
+                    f"Недостаточно места на Яндекс.Диске!\n\n"
+                    f"Размер файла: {file_size_gb:.2f} ГБ\n"
+                    f"Свободно на диске: {free_space_gb:.2f} ГБ\n"
+                    f"Не хватает: {need_to_free_gb:.2f} ГБ\n\n"
+                    f"Освободите место на диске."
+                )
+                return (False, free_space, message)
+            else:
+                return (True, free_space, "")
+
+        except Exception as e:
+            print(f"Ошибка проверки места на диске: {e}")
+            return (False, 0, f"Ошибка проверки места на диске: {e}")
 
     def _update_auth_status(self) -> None:
         """Обновление статуса авторизации в меню."""
