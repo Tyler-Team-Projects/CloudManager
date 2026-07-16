@@ -873,7 +873,7 @@ class MainWindow(QMainWindow):
         toast.show_at_bottom_right()
 
     def _on_download(self) -> None:
-        """Скачивание выбранных файлов."""
+        """Скачивание выбранных файлов с подтверждением при конфликтах."""
         if self._current_path == "mounts://":
             QMessageBox.warning(self, "Ошибка", "Скачивание запрещено в корневой директории")
             return
@@ -892,15 +892,36 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
+        files_to_download = [f for f in selected if not f.is_dir]
+        if not files_to_download:
+            QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
+            return
+
+        # Проверяем конфликты
+        downloads_path = cloud_provider._bridge.downloads_path
+        conflicts = [item for item in files_to_download if (downloads_path / item.name).exists()]
+
+        decisions = {}  # ключ – путь (str), значение – 'rename' / 'overwrite' / 'skip'
+        if conflicts:
+            from gui.dialogs.download_conflict_dialog import DownloadConflictDialog
+            dlg = DownloadConflictDialog(conflicts, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            decisions = dlg.get_decisions()  # dict[str, str]
+
         self._operation_in_progress = True
 
-        # Очищаем очередь загрузки
-        self._upload_queue = []
-        self._upload_success = 0
-        self._upload_total = 0
-        self._upload_provider = None
+        self._download_queue = []
+        for item in files_to_download:
+            action = decisions.get(item.path, 'rename')
+            if action == 'skip':
+                continue
+            if action == 'overwrite':
+                local_path = downloads_path / item.name
+            else:  # rename
+                local_path = cloud_provider._bridge._get_download_path(item.path, force_overwrite=False)
+            self._download_queue.append((item, local_path))
 
-        self._download_queue = [f for f in selected if not f.is_dir]
         self._download_success = 0
         self._download_total = len(self._download_queue)
         self._cloud_provider = cloud_provider
@@ -909,7 +930,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Скачивание 0 из {self._download_total}...")
             self._download_next()
         else:
-            self.progress_bar.setVisible(False)
+            self._operation_in_progress = False
             QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
 
     def _download_next(self) -> None:
@@ -928,12 +949,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
-        file_item = self._download_queue[0]
+        file_item, local_path = self._download_queue.pop(0)
         current = self._download_success + 1
 
         self.status_bar.showMessage(f"Скачивание: {file_item.name} ({current} из {self._download_total})")
-
-        local_path = self._cloud_provider._bridge._get_download_path(file_item.path)
 
         self._download_worker = DownloadWorker(
             self._cloud_provider,
@@ -952,43 +971,35 @@ class MainWindow(QMainWindow):
             current_mb = current / (1024 * 1024)
             total_mb = total / (1024 * 1024)
             percent = int(current / total * 100)
-            file_name = self._download_queue[0].name if self._download_queue else ""
+            file_name = self._download_queue[0][0].name if self._download_queue else ""
             self.status_bar.showMessage(
                 f"Скачивание: {file_name} - {current_mb:.1f}/{total_mb:.1f} МБ ({percent}%)"
             )
         else:
             current_mb = current / (1024 * 1024)
-            file_name = self._download_queue[0].name if self._download_queue else ""
+            file_name = self._download_queue[0][0].name if self._download_queue else ""
             self.status_bar.showMessage(f"Скачивание: {file_name} - {current_mb:.1f} МБ")
 
     def _on_download_finished(self, success: bool, local_path: str, remote_path: str) -> None:
         """Завершение скачивания одного файла."""
-        if self._download_queue:
-            downloaded_item = self._download_queue.pop(0)
-
-            if success:
-                self._download_success += 1
-                # Просто помечаем, что файл скачан (без сетевого запроса)
-                downloaded_item.is_downloaded = True
-                downloaded_item.is_synced = False  # или можно не трогать
-
-                # Сохраняем метаданные о факте скачивания
-                if os.path.exists(local_path):
-                    from datetime import datetime
-                    cloud_provider = self._providers.get('cloud')
-                    if cloud_provider and hasattr(cloud_provider, '_bridge'):
-                        bridge = cloud_provider._bridge
-                        bridge.download_metadata[local_path] = {
-                            'remote_path': remote_path,
-                            'downloaded_at': datetime.now().isoformat(),
-                            'size': os.path.getsize(local_path),
-                            'name': Path(local_path).name,
-                            'remote_hash': None,
-                            'local_hash': None,
-                            'is_synced': False
-                        }
-                        bridge._save_metadata()
-
+        if success:
+            self._download_success += 1
+            # Сохраняем метаданные о скачанном файле
+            if os.path.exists(local_path):
+                from datetime import datetime
+                cloud_provider = self._providers.get('cloud')
+                if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                    bridge = cloud_provider._bridge
+                    bridge.download_metadata[local_path] = {
+                        'remote_path': remote_path,
+                        'downloaded_at': datetime.now().isoformat(),
+                        'size': os.path.getsize(local_path),
+                        'name': Path(local_path).name,
+                        'remote_hash': None,
+                        'local_hash': None,
+                        'is_synced': False
+                    }
+                    bridge._save_metadata()
         self._download_next()
 
     def _update_file_status(self, remote_path: str, updated_item: CloudFile) -> None:
@@ -1008,7 +1019,7 @@ class MainWindow(QMainWindow):
     def _on_download_error(self, error: str) -> None:
         """Ошибка скачивания."""
         if self._download_queue:
-            failed_item = self._download_queue.pop(0)
+            failed_item, _ = self._download_queue.pop(0)
             file_name = failed_item.name
         else:
             file_name = "Неизвестный файл"

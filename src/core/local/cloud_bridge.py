@@ -278,21 +278,29 @@ class CloudBridge:
             return False
 
     def _get_download_path(self, remote_path: str, force_overwrite: bool = False) -> Path:
-
+        """
+        Определяет путь сохранения в Downloads.
+        Если файл существует и force_overwrite=False, добавляет номер в скобках (1), (2)...
+        Если force_overwrite=True, возвращает исходный путь (перезапись).
+        """
         filename = Path(remote_path).name
         download_path = self.downloads_path / filename
 
         if force_overwrite:
             return download_path
 
-        if download_path.exists():
-            name_without_ext = filename.rsplit('.', 1)[0]
-            ext = f".{filename.rsplit('.', 1)[1]}" if '.' in filename else ''
-            date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-            new_filename = f"{name_without_ext}_{date_str}{ext}"
-            download_path = self.downloads_path / new_filename
+        if not download_path.exists():
+            return download_path
 
-        return download_path
+        stem = download_path.stem
+        suffix = download_path.suffix
+        counter = 1
+        while True:
+            new_name = f"{stem} ({counter}){suffix}"
+            new_path = self.downloads_path / new_name
+            if not new_path.exists():
+                return new_path
+            counter += 1
 
     def _progress_callback(self, current: int, total: int):
         """Callback для отображения прогресса скачивания"""
@@ -380,56 +388,62 @@ class CloudBridge:
             json.dump(self.download_metadata, f, indent=2, default=str)
 
     def open_file(self, filename: str) -> bool:
-        """Открыть файл из облака (сохраняется в Downloads)"""
+        """Открыть файл из облака (сохраняется в Downloads)."""
         if not self.provider:
             print("Облако не подключено")
             return False
 
-        # нормализуем путь для винды
+        # Нормализация пути
         clean_filename = filename.replace("yadisk://", "").replace("\\", "/")
         current = self.current_path.replace("\\", "/").rstrip('/')
-
-        # если current пустой или просто / - оставляем /
         if current == "":
             current = "/"
-
         clean_filename = clean_filename.lstrip('/')
-
-        # полный путь в облаке
         remote_path = f"{current}/{clean_filename}"
         remote_path = remote_path.replace('//', '/')
-
         print(f"DEBUG: open_file - remote_path = {remote_path}")
 
-        # локальный путь
-        local_file = self._get_download_path(remote_path)
+        original_name = Path(remote_path).name
+        original_local = self.downloads_path / original_name
 
-        #  скачиваем если нет
-        if not local_file.exists():
+        if original_local.exists():
+            # Файл уже скачан – открываем
+            try:
+                import sys
+                if sys.platform == 'win32':
+                    import os
+                    os.startfile(str(original_local))
+                    return True
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', str(original_local)], check=True)
+                    return True
+                else:
+                    subprocess.run(['xdg-open', str(original_local)], check=True)
+                    return True
+            except Exception as e:
+                print(f"Не удалось открыть {filename}: {e}")
+                return False
+        else:
+            # Скачиваем файл
+            local_file = self._get_download_path(remote_path)  # сгенерирует оригинальное имя
             if not self.download_file(remote_path, local_file):
                 return False
-
-        try:
-            import sys
-            if sys.platform == 'win32':
-                import os
-                os.startfile(str(local_file))
-                return True
-            elif sys.platform == 'darwin':
-                subprocess.run(['open', str(local_file)], check=True)
-                return True
-            else:
-                subprocess.run(['xdg-open', str(local_file)], check=True)
-                return True
-        except FileNotFoundError:
-            if sys.platform == 'win32':
-                print("Не удалось открыть файл")
-            else:
-                print("xdg-open не найден. Установите: sudo apt install xdg-utils")
-            return False
-        except Exception as e:
-            print(f"Не удалось открыть {filename}: {e}")
-            return False
+            # Открываем
+            try:
+                import sys
+                if sys.platform == 'win32':
+                    import os
+                    os.startfile(str(local_file))
+                    return True
+                elif sys.platform == 'darwin':
+                    subprocess.run(['open', str(local_file)], check=True)
+                    return True
+                else:
+                    subprocess.run(['xdg-open', str(local_file)], check=True)
+                    return True
+            except Exception as e:
+                print(f"Не удалось открыть {filename}: {e}")
+                return False
 
     def upload_file(self, local_path: Path, remote_path: str = None, progress_callback = None) -> bool:
         """
