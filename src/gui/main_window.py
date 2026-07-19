@@ -94,6 +94,12 @@ class MainWindow(QMainWindow):
         self._tray_icon = None
         self._setup_tray()
 
+        self._copy_queue = []  # список кортежей (src_provider, src_path, dest_path, file_name)
+        self._copy_success = 0
+        self._copy_total = 0
+        self._copy_source_provider = None  # провайдер-источник (для скачивания)
+        self._copy_dest_provider = None  # текущий провайдер (для вставки)
+
 
         # Начальная загрузка
         self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
@@ -443,8 +449,7 @@ class MainWindow(QMainWindow):
         self.file_table.copy_requested.connect(self._on_copy_files)
         self.file_table.paste_requested.connect(self._on_paste_files)
         self.file_table.sync_check_requested.connect(self._on_sync_check)
-
-
+        self.file_table.new_folder_requested.connect(self._on_new_folder)
     def _load_stylesheet(self) -> None:
         """Загрузка стилей."""
         try:
@@ -1625,15 +1630,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", f"Не удалось переименовать: {e}")
 
     def _on_copy_files(self, items: list) -> None:
-        """Копирование файлов (сохраняем в буфер)."""
+        """Копирование файлов (сохраняем элементы и текущего провайдера)."""
         print(f"DEBUG: _on_copy_files получил {len(items)} элементов")
         self._clipboard = items
+        self._clipboard_source_provider = self._current_provider  # запоминаем, откуда скопировано
         for item in items:
             print(f"  - {item.name}")
         self.status_bar.showMessage(f"Скопировано {len(items)} элементов")
 
     def _on_paste_files(self) -> None:
-        """Вставка скопированных файлов."""
+        """Асинхронная вставка скопированных файлов."""
         if not self._clipboard:
             QMessageBox.information(self, "Инфо", "Нет скопированных файлов")
             return
@@ -1643,37 +1649,108 @@ class MainWindow(QMainWindow):
             return
 
         dest_path = self._current_path
+        source_provider = getattr(self, '_clipboard_source_provider', None)
 
-        progress = ProgressDialog("Копирование файлов", self)
-        progress.set_cancellable(False)
-        progress.show()
-
-        success_count = 0
-        for i, item in enumerate(self._clipboard):
-            src_path = item.path
+        # Формируем очередь копирования
+        self._copy_queue.clear()
+        for item in self._clipboard:
+            # Нормализуем исходный путь
+            src_path = item.path.replace('\\', '/')
+            # Если источник облачный (нет метода get_mounts_root), то путь должен начинаться с '/'
+            if source_provider and not hasattr(source_provider, 'get_mounts_root'):
+                if not src_path.startswith('/'):
+                    src_path = '/' + src_path.lstrip('/')
+            # Для локального источника оставляем как есть (Windows/Linux)
             name = Path(src_path).name
             dest = f"{dest_path.rstrip('/')}/{name}"
+            self._copy_queue.append((source_provider, src_path, dest, name))
 
-            progress.set_status(f"Копирование: {name}", f"{i + 1} из {len(self._clipboard)}")
+        self._copy_success = 0
+        self._copy_total = len(self._copy_queue)
+        self._copy_source_provider = source_provider
+        self._copy_dest_provider = self._current_provider
 
+        self._operation_in_progress = True
+        self._copy_next()
+
+    def _copy_next(self):
+        """Обрабатывает следующий элемент в очереди копирования."""
+        if not self._copy_queue:
+            self._operation_in_progress = False
+            self.status_bar.showMessage(f"Скопировано {self._copy_success} из {self._copy_total} файлов")
+            self._on_refresh()
+            return
+
+        src_provider, src_path, dest_path, name = self._copy_queue.pop(0)
+        self.status_bar.showMessage(f"Копирование: {name} ({self._copy_success + 1} из {self._copy_total})")
+
+        # Определяем, является ли источник облачным (отсутствует метод get_mounts_root)
+        is_cloud_source = src_provider and not hasattr(src_provider, 'get_mounts_root')
+
+        if is_cloud_source:
+            # Для облачного источника – сначала скачиваем во временный файл
+            import tempfile
+            self._copy_temp_file = tempfile.NamedTemporaryFile(delete=False)
+            self._copy_temp_path = self._copy_temp_file.name
+            self._copy_temp_file.close()
+
+            self._copy_dest_path = dest_path
+            self._copy_dest_name = name
+            self._download_worker = DownloadWorker(src_provider, src_path, self._copy_temp_path)
+            self._download_worker.finished.connect(self._on_copy_download_finished)
+            self._download_worker.error.connect(self._on_copy_error)
+            self._download_worker.start()
+        else:
+            # Локальный источник – используем исходный путь напрямую
+            self._copy_temp_path = src_path  # путь к локальному файлу
+            self._copy_is_temp = False  # временный файл не создавался
+            self._start_upload(dest_path, name)
+
+
+    def _on_copy_download_finished(self, success, local_path, remote_path):
+        """Обработка завершения скачивания временного файла."""
+        if success:
+            # Используем ранее сохранённые путь и имя
+            self._start_upload(self._copy_dest_path, self._copy_dest_name)
+        else:
+            self._on_copy_error("Ошибка скачивания временного файла")
+
+    def _start_upload(self, dest_path, name):
+        """Запускает загрузку файла (копирование) в целевое место."""
+        self._upload_worker = UploadWorker(
+            self._copy_dest_provider,
+            Path(self._copy_temp_path),
+            dest_path
+        )
+        self._upload_worker.finished.connect(self._on_copy_upload_finished)
+        self._upload_worker.error.connect(self._on_copy_error)
+        self._upload_worker.start()
+
+    def _on_copy_upload_finished(self, success, remote_path):
+        """Завершена загрузка после копирования."""
+        if success:
+            self._copy_success += 1
+
+        # Удаляем временный файл, только если он был создан (облачной источник)
+        if getattr(self, '_copy_is_temp', True) and hasattr(self, '_copy_temp_path'):
+            if os.path.exists(self._copy_temp_path):
+                try:
+                    os.unlink(self._copy_temp_path)
+                except OSError:
+                    pass
+
+        self._copy_next()
+
+    def _on_copy_error(self, error_msg):
+        """Ошибка при копировании."""
+        print(f"[ERROR] Copy failed: {error_msg}")
+        # Удаляем временный файл при ошибке
+        if hasattr(self, '_copy_temp_path') and os.path.exists(self._copy_temp_path):
             try:
-                # Пытаемся использовать copy_file если есть
-                if hasattr(self._current_provider, 'copy_file'):
-                    self._current_provider.copy_file(src_path, dest)
-                else:
-                    # Fallback: download + upload
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                        self._current_provider.download_file(src_path, tmp.name)
-                        self._current_provider.upload_file(tmp.name, dest)
-                success_count += 1
-            except Exception as e:
-                print(f"Ошибка копирования {name}: {e}")
-                QMessageBox.warning(self, "Ошибка", f"Не удалось скопировать {name}: {e}")
-
-        progress.operation_finished(True)
-        self.status_bar.showMessage(f"Скопировано {success_count} из {len(self._clipboard)} файлов")
-        self._on_refresh()
+                os.unlink(self._copy_temp_path)
+            except OSError:
+                pass
+        self._copy_next()
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""

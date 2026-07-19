@@ -7,13 +7,21 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMenu, QListWidget, QListWidgetItem,
     QStackedWidget, QInputDialog, QStyle, QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel
 
 from PyQt6.QtGui import QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
 
+
+class FileSortFilterProxyModel(QSortFilterProxyModel):
+    def lessThan(self, left, right):
+        if self.sortColumn() == 1:  # размер
+            left_val = left.data(Qt.ItemDataRole.UserRole + 1)
+            right_val = right.data(Qt.ItemDataRole.UserRole + 1)
+            return left_val < right_val
+        return super().lessThan(left, right)
 
 class FileTableModel(QStandardItemModel):
     """Модель для отображения файлов в таблице."""
@@ -181,6 +189,7 @@ class FileTableView(QWidget):
     rename_requested = pyqtSignal(object, str)
     copy_requested = pyqtSignal(list)
     paste_requested = pyqtSignal()
+    new_folder_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -250,7 +259,6 @@ class FileTableView(QWidget):
         self.table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table_view.setAlternatingRowColors(False)
-        self.table_view.setSortingEnabled(True)
         self.table_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_view.verticalHeader().setVisible(False)
         self.table_view.horizontalHeader().setStretchLastSection(True)
@@ -258,7 +266,15 @@ class FileTableView(QWidget):
         self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
         self.table_model = FileTableModel()
-        self.table_view.setModel(self.table_model)
+
+        # --- Создаём свою прокси для сортировки ---
+        self.sort_proxy = FileSortFilterProxyModel()
+        self.sort_proxy.setSourceModel(self.table_model)
+        self.table_view.setModel(self.sort_proxy)
+
+        # Подключаем сортировку по клику на заголовок
+        header = self.table_view.horizontalHeader()
+        header.sectionClicked.connect(self._on_header_clicked)
 
         self.table_view.doubleClicked.connect(self._on_table_double_click)
         self.table_view.customContextMenuRequested.connect(self._show_context_menu)
@@ -413,12 +429,11 @@ class FileTableView(QWidget):
             self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", ""])
 
     def get_selected_items(self) -> List[CloudFile]:
-        """Получить выбранные элементы (работает в обоих режимах)."""
         items = []
-
         if self._view_mode == "table":
             for index in self.table_view.selectionModel().selectedRows(0):
-                item = self.table_model.get_item(index.row())
+                src_index = self.sort_proxy.mapToSource(index)
+                item = self.table_model.get_item(src_index.row())
                 if item:
                     items.append(item)
         else:
@@ -426,14 +441,31 @@ class FileTableView(QWidget):
                 item = list_item.data(Qt.ItemDataRole.UserRole)
                 if item:
                     items.append(item)
-
         return items
 
+    def _source_index(self, index: QModelIndex) -> QModelIndex:
+        model = self.table_view.model()
+        print(f"[DEBUG] model type: {type(model).__name__}")
+        if isinstance(model, QSortFilterProxyModel):
+            return model.mapToSource(index)
+        return index
+
     def _on_table_double_click(self, index: QModelIndex) -> None:
-        """Обработка двойного клика в таблице."""
-        item = self.table_model.get_item(index.row())
+        # index – из прокси, преобразуем к исходной модели
+        src_index = self.sort_proxy.mapToSource(index)
+        item = self.table_model.get_item(src_index.row())
         if item:
             self.file_double_clicked.emit(item)
+
+    def _on_header_clicked(self, logical_index):
+        """Переключает сортировку при клике на заголовок."""
+        proxy = self.sort_proxy
+        if proxy.sortColumn() == logical_index:
+            # Переключаем порядок
+            new_order = Qt.SortOrder.DescendingOrder if proxy.sortOrder() == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+        else:
+            new_order = Qt.SortOrder.AscendingOrder
+        proxy.sort(logical_index, new_order)
 
     def _on_icon_double_click(self, index) -> None:
         """Обработка двойного клика в иконках."""
@@ -448,6 +480,35 @@ class FileTableView(QWidget):
         items = self.get_selected_items()
         has_selection = len(items) > 0
 
+        # Определяем, кликнули ли на пустом месте
+        is_empty_area = False
+        if self._view_mode == "icons":
+            if self.icon_view.itemAt(pos) is None:
+                is_empty_area = True
+        else:  # table
+            index = self.table_view.indexAt(pos)
+            if not index.isValid():
+                is_empty_area = True
+
+        # Если клик на пустом месте (и не в mounts:// корне)
+        if is_empty_area and not self._is_mounts_root():
+            empty_menu = QMenu(self)
+            new_folder_action = QAction(QIcon.fromTheme("folder-new"), "Новая папка", self)
+            new_folder_action.triggered.connect(self.new_folder_requested.emit)
+            empty_menu.addAction(new_folder_action)
+
+            paste_action = QAction(QIcon.fromTheme("edit-paste"), "Вставить", self)
+            paste_action.setEnabled(len(self._clipboard_items) > 0)
+            paste_action.triggered.connect(self._on_paste)
+            empty_menu.addAction(paste_action)
+
+            if self._view_mode == "table":
+                empty_menu.exec(self.table_view.viewport().mapToGlobal(pos))
+            else:
+                empty_menu.exec(self.icon_view.viewport().mapToGlobal(pos))
+            return
+
+        # Иначе – стандартное меню для выделенных элементов (без изменений)
         has_downloaded = any(getattr(item, 'is_downloaded', False) for item in items)
         has_not_downloaded = any(not getattr(item, 'is_downloaded', False) for item in items)
         has_outdated = any(
@@ -458,29 +519,23 @@ class FileTableView(QWidget):
         is_root = self._is_mounts_root()
 
         if is_root or is_local:
-            # На локальном диске или в mounts:// облачные операции НЕДОСТУПНЫ
             self.download_action.setEnabled(False)
             self.sync_action.setEnabled(False)
             self.update_action.setEnabled(False)
         else:
-            # В облачной папке облачные операции доступны
             self.download_action.setEnabled(has_selection)
             self.download_action.setVisible(has_selection)
-
             self.sync_action.setEnabled(has_selection and has_downloaded)
             self.sync_action.setVisible(has_selection)
-
             self.update_action.setEnabled(has_selection and has_outdated)
             self.update_action.setVisible(has_selection)
 
         if is_root:
-            # В корне mounts:// локальные операции блокируем
             self.copy_action.setEnabled(False)
             self.paste_action.setEnabled(False)
             self.rename_action.setEnabled(False)
             self.delete_action.setEnabled(False)
         else:
-            # На локальном диске И в облачной папке локальные операции доступны
             self.copy_action.setEnabled(has_selection and not has_folder)
             self.paste_action.setEnabled(has_selection)
             self.rename_action.setEnabled(has_selection and len(items) == 1)
