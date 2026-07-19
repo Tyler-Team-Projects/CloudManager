@@ -100,7 +100,12 @@ class MainWindow(QMainWindow):
         self._copy_source_provider = None  # провайдер-источник (для скачивания)
         self._copy_dest_provider = None  # текущий провайдер (для вставки)
 
-
+        self._start_minimized = (
+                QSettings("TeamTyler", "DiscoHack").value("autostart", False, type=bool)
+                and '--minimized' in sys.argv
+        )
+        if self._start_minimized:
+            self.hide()
         # Начальная загрузка
         self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
 
