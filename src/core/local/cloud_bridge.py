@@ -652,6 +652,19 @@ class CloudBridge:
             print(f"Ошибка вычисления хеша локального файла: {e}")
             return None
 
+    def get_public_link(self, remote_path: str) -> Optional[str]:
+        """Получить публичную ссылку на файл/папку."""
+        if not self.provider:
+            return None
+        return self.provider.get_public_link(remote_path)
+
+    def delete_public_link(self, remote_path: str) -> bool:
+        """Удалить публичную ссылку."""
+        if not self.provider:
+            return False
+        self.provider.delete_public_link(remote_path)
+        return True
+
     def check_file_sync(self, remote_path: str) -> dict:
         """
         Проверить синхронизацию конкретного файла.

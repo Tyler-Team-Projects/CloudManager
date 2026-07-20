@@ -88,10 +88,10 @@ class CloudProviderAdapter(BaseCloudProvider):
         return result
 
     def get_public_link(self, remote_path: str) -> Optional[str]:
-        return None
+        return self._bridge.get_public_link(remote_path)
 
     def delete_public_link(self, remote_path: str) -> bool:
-        return False
+        return self._bridge.delete_public_link(remote_path)
 
     def get_thumbnail(self, remote_path: str, size: str = "S") -> Optional[bytes]:
         return None

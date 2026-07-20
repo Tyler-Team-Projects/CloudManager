@@ -190,6 +190,7 @@ class FileTableView(QWidget):
     copy_requested = pyqtSignal(list)
     paste_requested = pyqtSignal()
     new_folder_requested = pyqtSignal()
+    public_link_requested = pyqtSignal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -297,6 +298,10 @@ class FileTableView(QWidget):
         self.update_action = QAction(QIcon.fromTheme("document-save"), "Обновить локальную копию", self)
         self.update_action.triggered.connect(self._on_update)
 
+        # Публичная ссылка
+        self.public_link_action = QAction(QIcon.fromTheme("emblem-shared"), "Публичная ссылка", self)
+        self.public_link_action.triggered.connect(self._on_public_link)
+
         self.rename_action = QAction(QIcon.fromTheme("edit-rename"), "Переименовать", self)
         self.rename_action.triggered.connect(self._on_rename)
 
@@ -316,6 +321,7 @@ class FileTableView(QWidget):
         self.context_menu.addAction(self.download_action)
         self.context_menu.addAction(self.sync_action)
         self.context_menu.addAction(self.update_action)
+        self.context_menu.addAction(self.public_link_action)
         self.context_menu.addSeparator()
         self.context_menu.addAction(self.copy_action)
         self.context_menu.addAction(self.paste_action)
@@ -477,6 +483,10 @@ class FileTableView(QWidget):
 
     def _show_context_menu(self, pos: QPoint) -> None:
         """Показ контекстного меню с динамическими опциями."""
+        # Сбрасываем состояние публичной ссылки перед каждым показом меню
+        self.public_link_action.setVisible(False)
+        self.public_link_action.setEnabled(False)
+
         items = self.get_selected_items()
         has_selection = len(items) > 0
 
@@ -529,6 +539,8 @@ class FileTableView(QWidget):
             self.sync_action.setVisible(has_selection)
             self.update_action.setEnabled(has_selection and has_outdated)
             self.update_action.setVisible(has_selection)
+            self.public_link_action.setVisible(not is_local and not is_root)
+            self.public_link_action.setEnabled(not is_local and not is_root and len(items) == 1)
 
         if is_root:
             self.copy_action.setEnabled(False)
@@ -545,6 +557,11 @@ class FileTableView(QWidget):
             self.context_menu.exec(self.table_view.viewport().mapToGlobal(pos))
         else:
             self.context_menu.exec(self.icon_view.viewport().mapToGlobal(pos))
+
+    def _on_public_link(self):
+        items = self.get_selected_items()
+        if len(items) == 1:
+            self.public_link_requested.emit(items[0].path)
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
