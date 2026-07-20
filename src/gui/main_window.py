@@ -450,6 +450,8 @@ class MainWindow(QMainWindow):
         self.file_table.paste_requested.connect(self._on_paste_files)
         self.file_table.sync_check_requested.connect(self._on_sync_check)
         self.file_table.new_folder_requested.connect(self._on_new_folder)
+        self.file_table.files_dropped.connect(self.upload_files)
+
     def _load_stylesheet(self) -> None:
         """Загрузка стилей."""
         try:
@@ -660,7 +662,7 @@ class MainWindow(QMainWindow):
         self.status_bar.clearMessage()
 
     def _on_upload(self) -> None:
-        """Асинхронная загрузка файлов на диск (в облако)."""
+        """Асинхронная загрузка файлов на диск через диалоговое окно."""
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
             return
@@ -676,14 +678,31 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
+        self.upload_files(files)
+
+    def upload_files(self, files: list) -> None:
+        """Единая точка входа для загрузки файлов (из диалога или из drag and drop)"""
+        if self._is_local_provider():
+            QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
+            return
+
+        if self._current_path == "mounts://":
+            QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
+            return
+
+        if not self._current_provider:
+            return
+
+        # Проверка места для каждого файла
         files_to_upload = []
-        total_size = 0
-
         for file_path in files:
-            file_size = os.path.getsize(file_path)
-            total_size += file_size
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError as e:
+                QMessageBox.warning(self, "Ошибка", f"Не удалось получить размер файла {file_path}: {e}")
+                return
 
-            # нужно ли проверять место для этого файла
+            # Проверяем, нужно ли проверять место для этого файла
             if self._need_check_disk_space(file_size):
                 is_enough, free_space, message = self._check_available_space(file_size)
                 if not is_enough:
@@ -701,7 +720,6 @@ class MainWindow(QMainWindow):
         self._upload_dest_path = self._current_path
 
         if self._upload_queue:
-            self._upload_dest_path = self._current_path
             self.status_bar.showMessage(f"Загрузка 0 из {self._upload_total}...")
             self._upload_next()
 
