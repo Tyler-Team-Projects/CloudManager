@@ -17,7 +17,8 @@ def main() -> None:
     app.setOrganizationName("Hackathon Team")
 
     window = MainWindow()
-    window.show()
+    if not window._start_minimized:
+        window.show()
 
     sys.exit(app.exec())
 
