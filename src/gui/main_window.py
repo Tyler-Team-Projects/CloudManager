@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
@@ -688,6 +689,54 @@ class MainWindow(QMainWindow):
         self._on_refresh()
         self.status_bar.clearMessage()
 
+    def _copy_local_files(self, files: list) -> None:
+        """Копирует локальные файлы из ОС в текущую локальную папку (для drag-and-drop)."""
+        dest_dir = self._current_path
+        if dest_dir.startswith("file://"):
+            dest_dir = dest_dir.replace("file://", "")
+        if dest_dir == "mounts://":
+            dest_dir = str(Path.home())
+
+        dest_path = Path(dest_dir)
+        if not dest_path.exists():
+            QMessageBox.warning(self, "Ошибка", f"Папка {dest_path} не существует")
+            return
+
+        success_count = 0
+        total_files = len(files)
+
+        for file_path in files:
+            src = Path(file_path)
+            if not src.exists():
+                continue
+
+            dest = dest_path / src.name
+
+            # Если файл уже существует, то добавляем номер
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                counter = 1
+                while True:
+                    new_name = f"{stem} ({counter}){suffix}"
+                    new_dest = dest_path / new_name
+                    if not new_dest.exists():
+                        dest = new_dest
+                        break
+                    counter += 1
+
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+                success_count += 1
+            except Exception as e:
+                print(f"Ошибка копирования {file_path}: {e}")
+
+        self.status_bar.showMessage(f"Скопировано {success_count} из {total_files} файлов")
+        self._on_refresh()
+
     def _on_upload(self) -> None:
         """Асинхронная загрузка файлов на диск через диалоговое окно."""
         if self._is_local_provider():
@@ -709,18 +758,19 @@ class MainWindow(QMainWindow):
 
     def upload_files(self, files: list) -> None:
         """Единая точка входа для загрузки файлов (из диалога или из drag and drop)"""
-        if self._is_local_provider():
-            QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
+        if not self._current_provider:
             return
 
+        # локальная папка - копируем файлы
+        if self._is_local_provider() or self._current_path == "mounts://":
+            self._copy_local_files(files)
+            return
+
+        # облако - загружаем на Яндекс.Диск
         if self._current_path == "mounts://":
             QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
             return
 
-        if not self._current_provider:
-            return
-
-        # Проверка места для каждого файла
         files_to_upload = []
         for file_path in files:
             try:
@@ -729,7 +779,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось получить размер файла {file_path}: {e}")
                 return
 
-            # Проверяем, нужно ли проверять место для этого файла
             if self._need_check_disk_space(file_size):
                 is_enough, free_space, message = self._check_available_space(file_size)
                 if not is_enough:
