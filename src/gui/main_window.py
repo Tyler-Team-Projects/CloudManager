@@ -100,7 +100,12 @@ class MainWindow(QMainWindow):
         self._copy_source_provider = None  # провайдер-источник (для скачивания)
         self._copy_dest_provider = None  # текущий провайдер (для вставки)
 
-
+        self._start_minimized = (
+                QSettings("TeamTyler", "DiscoHack").value("autostart", False, type=bool)
+                and '--minimized' in sys.argv
+        )
+        if self._start_minimized:
+            self.hide()
         # Начальная загрузка
         self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
 
@@ -450,6 +455,7 @@ class MainWindow(QMainWindow):
         self.file_table.paste_requested.connect(self._on_paste_files)
         self.file_table.sync_check_requested.connect(self._on_sync_check)
         self.file_table.new_folder_requested.connect(self._on_new_folder)
+        self.file_table.public_link_requested.connect(self._on_public_link)
         self.file_table.files_dropped.connect(self.upload_files)
 
     def _load_stylesheet(self) -> None:
@@ -543,6 +549,27 @@ class MainWindow(QMainWindow):
         self.items_label.setText(f"Элементов: {len(files)}")
         self.status_bar.showMessage(f"Загружено {len(files)} элементов")
         self._update_toolbar_buttons()
+
+    def _on_public_link(self, remote_path: str):
+        """Показать диалог управления публичной ссылкой."""
+        cloud_provider = self._providers.get('cloud')
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            QMessageBox.warning(self, "Ошибка", "Облачное хранилище недоступно.")
+            return
+
+        bridge = cloud_provider._bridge
+        if not bridge.has_token():
+            QMessageBox.warning(self, "Ошибка", "Необходимо авторизоваться в Яндекс.Диске.")
+            return
+
+        url = bridge.get_public_link(remote_path)
+
+        def delete_callback():
+            return bridge.delete_public_link(remote_path)
+
+        from gui.dialogs.public_link_dialog import PublicLinkDialog
+        dlg = PublicLinkDialog(url, delete_callback, self)
+        dlg.exec()
 
     def _update_toolbar_buttons(self) -> None:
         """Обновление состояния кнопок тулбара."""
