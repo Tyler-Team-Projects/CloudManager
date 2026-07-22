@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QSettings
 from core.autostart import enable_autostart, disable_autostart
 
-
 class SettingsDialog(QDialog):
     """Окно настроек с вкладками."""
 
