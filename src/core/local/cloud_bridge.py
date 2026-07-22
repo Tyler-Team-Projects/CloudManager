@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .cloud.syns_watcher import SyncWatcher
+from PyQt6.QtCore import QSettings
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from api.manager import CloudManager
@@ -27,6 +28,14 @@ class CloudBridge:
         """
         self.local_path = local_path
         self.downloads_path = local_path / 'Downloads'
+        settings = QSettings("TeamTyler", "DiscoHack")
+        custom_download = settings.value("download_folder", "")
+        if custom_download:
+            self.downloads_path = Path(custom_download)
+        else:
+            self.downloads_path = local_path / 'Downloads'
+        self.downloads_path.mkdir(parents=True, exist_ok=True)
+
         self.downloads_path.mkdir(parents=True, exist_ok=True)
         self.manager = CloudManager()
         self.provider = None
@@ -37,9 +46,14 @@ class CloudBridge:
         self.metadata_file = local_path / '.download_metadata.json'
         self.download_metadata = self._load_metadata()
 
-        if self.has_token():
-            print("[SYNC] Token found, starting sync from __init__")
-            self.start_sync()
+        # if self.has_token():
+        #     print("[SYNC] Token found, starting sync from __init__")
+        #     self.start_sync()
+
+    def set_download_path(self, path: Path) -> None:
+        """Установить новую папку для загрузок."""
+        self.downloads_path = path
+        self.downloads_path.mkdir(parents=True, exist_ok=True)
 
     def _init_provider(self):
         """Инициализация провайдера Яндекс Диска"""
