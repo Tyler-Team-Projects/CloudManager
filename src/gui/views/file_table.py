@@ -7,9 +7,12 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMenu, QListWidget, QListWidgetItem,
     QStackedWidget, QInputDialog, QStyle, QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel
 
-from PyQt6.QtGui import QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData
+from PyQt6.QtGui import (
+    QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence,
+    QDragEnterEvent, QDragMoveEvent, QDropEvent
+)
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
@@ -191,6 +194,7 @@ class FileTableView(QWidget):
     paste_requested = pyqtSignal()
     new_folder_requested = pyqtSignal()
     public_link_requested = pyqtSignal(str)
+    files_dropped = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -210,6 +214,8 @@ class FileTableView(QWidget):
 
         self.stacked_widget = QStackedWidget()
 
+        self.setAcceptDrops(True)
+
         # ============ ИКОНКИ (индекс 0) ============
         self.icon_view = QListWidget()
         self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
@@ -224,6 +230,11 @@ class FileTableView(QWidget):
         self.icon_view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.icon_view.setFlow(QListWidget.Flow.LeftToRight)
         self.icon_view.setWrapping(True)
+
+        self.icon_view.setAcceptDrops(True)
+        self.icon_view.dragEnterEvent = self.dragEnterEvent
+        self.icon_view.dragMoveEvent = self.dragMoveEvent
+        self.icon_view.dropEvent = self.dropEvent
 
         self.icon_view.setStyleSheet("""
             QListWidget {
@@ -265,6 +276,11 @@ class FileTableView(QWidget):
         self.table_view.horizontalHeader().setStretchLastSection(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self.table_view.setAcceptDrops(True)
+        self.table_view.dragEnterEvent = self.dragEnterEvent
+        self.table_view.dragMoveEvent = self.dragMoveEvent
+        self.table_view.dropEvent = self.dropEvent
 
         self.table_model = FileTableModel()
 
@@ -562,6 +578,38 @@ class FileTableView(QWidget):
         items = self.get_selected_items()
         if len(items) == 1:
             self.public_link_requested.emit(items[0].path)
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Проверяем, что перетаскивают именно локальные файлы"""
+        if self._is_cloud_provider and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._is_cloud_provider and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Обрабатываем сброс файлов"""
+        mime_data = event.mimeData()
+
+        if self._is_cloud_provider and mime_data.hasUrls():
+            event.acceptProposedAction()
+
+            # Извлекаем локальные абсолютные пути из URL
+            local_paths = []
+            for url in mime_data.urls():
+                if url.isLocalFile():
+                    local_paths.append(url.toLocalFile())
+
+            # Если нашли локальные файлы - отправляем их через сигнал
+            if local_paths:
+                print(f"DEBUG: Dropped {len(local_paths)} files: {local_paths}")
+                self.files_dropped.emit(local_paths)
+        else:
+            event.ignore()
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""

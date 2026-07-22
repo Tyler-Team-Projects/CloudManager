@@ -28,9 +28,9 @@ def disable_autostart():
         _disable_linux()
 
 # ========== Windows ==========
-import winreg
 
 def _enable_windows():
+    import winreg
     key = winreg.HKEY_CURRENT_USER
     subkey = r'Software\Microsoft\Windows\CurrentVersion\Run'
     try:
@@ -41,6 +41,7 @@ def _enable_windows():
         print(f"Ошибка добавления в автозагрузку: {e}")
 
 def _disable_windows():
+    import winreg
     key = winreg.HKEY_CURRENT_USER
     subkey = r'Software\Microsoft\Windows\CurrentVersion\Run'
     try:
