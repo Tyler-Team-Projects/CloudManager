@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QSettings
 from core.autostart import enable_autostart, disable_autostart
 
-
 class SettingsDialog(QDialog):
     """Окно настроек с вкладками."""
 
@@ -80,6 +79,11 @@ class SettingsDialog(QDialog):
         # Поведение при закрытии окна
         group_box = QGroupBox("При закрытии окна")
         group_layout = QVBoxLayout(group_box)
+
+        self.autostart_check = QCheckBox("Запускать вместе с системой")
+        current_autostart = self._settings.value("autostart", False, type=bool)
+        self.autostart_check.setChecked(current_autostart)
+        layout.addWidget(self.autostart_check)
 
         self.tray_radio = QRadioButton("Сворачивать в системный трей")
         self.exit_radio = QRadioButton("Полностью закрывать приложение")
