@@ -4,14 +4,13 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint
-from PyQt6.QtGui import QFont
 
 
 class ToastNotification(QWidget):
     """Всплывающее окно в правом нижнем углу экрана."""
 
     def __init__(self, title: str, message: str, button_text: str,
-                 callback, parent=None):
+                 callback, parent=None, duration: int = 10000):
         super().__init__(parent)
         self._callback = callback
         self.setWindowFlags(
@@ -21,7 +20,6 @@ class ToastNotification(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
-        # Общие стили
         self.setStyleSheet("""
             QWidget#toast {
                 background-color: #ffffff;
@@ -76,7 +74,7 @@ class ToastNotification(QWidget):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self.close)
-        self._timer.start(10000)
+        self._timer.start(duration)
 
         self.adjustSize()
 

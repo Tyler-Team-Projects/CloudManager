@@ -78,11 +78,16 @@ class SyncWatcher:
         self.running = False
         self.cloud_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self.check_interval = 30
+
+    def set_interval(self, seconds: int):
+        """Изменить интервал проверки облака."""
+        self.check_interval = seconds
 
     def _check_cloud_loop(self):
         """Фоновый цикл проверки облака."""
         while not self._stop_event.is_set():
-            time.sleep(30)
+            time.sleep(self.check_interval)
 
             if not self.cloud_bridge.has_token():
                 continue
