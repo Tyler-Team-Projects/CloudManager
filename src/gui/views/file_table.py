@@ -578,15 +578,16 @@ class FileTableView(QWidget):
         items = self.get_selected_items()
         if len(items) == 1:
             self.public_link_requested.emit(items[0].path)
+
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        """Проверяем, что перетаскивают именно локальные файлы"""
-        if self._is_cloud_provider and event.mimeData().hasUrls():
+        """Проверяем, что перетаскивают именно локальные файлы."""
+        if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        if self._is_cloud_provider and event.mimeData().hasUrls():
+        if event.mimeData().hasUrls():
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -595,22 +596,19 @@ class FileTableView(QWidget):
         """Обрабатываем сброс файлов"""
         mime_data = event.mimeData()
 
-        if self._is_cloud_provider and mime_data.hasUrls():
+        if mime_data.hasUrls():
             event.acceptProposedAction()
 
-            # Извлекаем локальные абсолютные пути из URL
             local_paths = []
             for url in mime_data.urls():
                 if url.isLocalFile():
                     local_paths.append(url.toLocalFile())
 
-            # Если нашли локальные файлы - отправляем их через сигнал
             if local_paths:
                 print(f"DEBUG: Dropped {len(local_paths)} files: {local_paths}")
                 self.files_dropped.emit(local_paths)
         else:
             event.ignore()
-
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
         if self._is_mounts_root():
