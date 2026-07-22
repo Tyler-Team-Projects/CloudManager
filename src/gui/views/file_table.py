@@ -7,20 +7,31 @@ from PyQt6.QtWidgets import (
     QAbstractItemView, QMenu, QListWidget, QListWidgetItem,
     QStackedWidget, QInputDialog, QStyle, QApplication
 )
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize
 
-from PyQt6.QtGui import QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData
+from PyQt6.QtGui import (
+    QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence,
+    QDragEnterEvent, QDragMoveEvent, QDropEvent
+)
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
 
+
+class FileSortFilterProxyModel(QSortFilterProxyModel):
+    def lessThan(self, left, right):
+        if self.sortColumn() == 1:  # размер
+            left_val = left.data(Qt.ItemDataRole.UserRole + 1)
+            right_val = right.data(Qt.ItemDataRole.UserRole + 1)
+            return left_val < right_val
+        return super().lessThan(left, right)
 
 class FileTableModel(QStandardItemModel):
     """Модель для отображения файлов в таблице."""
 
     def __init__(self):
         super().__init__()
-        self.setHorizontalHeaderLabels(["Статус", "Имя", "Размер", "Тип"])
+        self.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"]) # "Тип",
         self._items: List[CloudFile] = []
 
     def set_items(self, items: List[CloudFile]) -> None:
@@ -29,13 +40,44 @@ class FileTableModel(QStandardItemModel):
         self.removeRows(0, self.rowCount())
 
         for item in items:
-            # --- КОЛОНКА 0: СТАТУС ---
+            # --- КОЛОНКА 0: ИМЯ ---
+            name_item = QStandardItem(item.name)
+            name_item.setData(item, Qt.ItemDataRole.UserRole)
+            name_item.setEditable(False)
+
+            if item.is_dir:
+                name_item.setIcon(self._get_icon("folder"))
+            else:
+                name_item.setIcon(self._get_file_icon(item.name))
+
+            # --- КОЛОНКА 1: РАЗМЕР ---
+            if item.is_dir:
+                size_str = ""
+                numeric_size = -1  # папки идут первыми при сортировке ↑
+            else:
+                size_str = self._format_size(item.size)
+                numeric_size = item.size
+
+            size_item = QStandardItem(size_str)
+            size_item.setEditable(False)
+            size_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            size_item.setData(numeric_size, Qt.ItemDataRole.UserRole + 1)  # числовой размер для сортировки
+
+            # --- КОЛОНКА 2: ТИП ---
+            # if item.is_dir:
+            #     type_str = "Папка"
+            # else:
+            #     type_str = item.mime_type or "Файл"
+            #
+            # type_item = QStandardItem(type_str)
+            # type_item.setEditable(False)
+
+            # --- КОЛОНКА 3: СТАТУС ---
             status_item = QStandardItem()
             status_item.setEditable(False)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             if item.is_dir:
-                # Для папок — пустая ячейка (иконка будет в колонке "Имя")
                 status_item.setIcon(QIcon())
                 status_item.setText("")
                 status_item.setToolTip("Папка")
@@ -63,36 +105,15 @@ class FileTableModel(QStandardItemModel):
                     status_item.setData("not_downloaded", Qt.ItemDataRole.UserRole + 1)
                     status_item.setForeground(Qt.GlobalColor.gray)
 
-            # --- КОЛОНКА 1: ИМЯ ---
-            name_item = QStandardItem(item.name)
-            name_item.setData(item, Qt.ItemDataRole.UserRole)
-            name_item.setEditable(False)
+            self.appendRow([name_item, size_item, status_item]) # type_item,
 
-            if item.is_dir:
-                name_item.setIcon(self._get_icon("folder"))
-            else:
-                name_item.setIcon(self._get_file_icon(item.name))
-
-            # --- КОЛОНКА 2: РАЗМЕР ---
-            if item.is_dir:
-                size_str = ""
-            else:
-                size_str = self._format_size(item.size)
-
-            size_item = QStandardItem(size_str)
-            size_item.setEditable(False)
-            size_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-            # --- КОЛОНКА 3: ТИП ---
-            if item.is_dir:
-                type_str = "Папка"
-            else:
-                type_str = item.mime_type or "Файл"
-
-            type_item = QStandardItem(type_str)
-            type_item.setEditable(False)
-
-            self.appendRow([status_item, name_item, size_item, type_item])
+    def sort(self, column: int, order: Qt.SortOrder = Qt.SortOrder.AscendingOrder) -> None:
+        """Корректная сортировка по размеру и имени."""
+        if column == 1:  # колонка размера
+            self.setSortRole(Qt.ItemDataRole.UserRole + 1)
+        else:
+            self.setSortRole(Qt.ItemDataRole.DisplayRole)
+        super().sort(column, order)
 
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
@@ -171,6 +192,9 @@ class FileTableView(QWidget):
     rename_requested = pyqtSignal(object, str)
     copy_requested = pyqtSignal(list)
     paste_requested = pyqtSignal()
+    new_folder_requested = pyqtSignal()
+    public_link_requested = pyqtSignal(str)
+    files_dropped = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -190,6 +214,8 @@ class FileTableView(QWidget):
 
         self.stacked_widget = QStackedWidget()
 
+        self.setAcceptDrops(True)
+
         # ============ ИКОНКИ (индекс 0) ============
         self.icon_view = QListWidget()
         self.icon_view.setViewMode(QListWidget.ViewMode.IconMode)
@@ -204,6 +230,11 @@ class FileTableView(QWidget):
         self.icon_view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.icon_view.setFlow(QListWidget.Flow.LeftToRight)
         self.icon_view.setWrapping(True)
+
+        self.icon_view.setAcceptDrops(True)
+        self.icon_view.dragEnterEvent = self.dragEnterEvent
+        self.icon_view.dragMoveEvent = self.dragMoveEvent
+        self.icon_view.dropEvent = self.dropEvent
 
         self.icon_view.setStyleSheet("""
             QListWidget {
@@ -240,15 +271,27 @@ class FileTableView(QWidget):
         self.table_view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table_view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.table_view.setAlternatingRowColors(False)
-        self.table_view.setSortingEnabled(True)
         self.table_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table_view.verticalHeader().setVisible(False)
         self.table_view.horizontalHeader().setStretchLastSection(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
 
+        self.table_view.setAcceptDrops(True)
+        self.table_view.dragEnterEvent = self.dragEnterEvent
+        self.table_view.dragMoveEvent = self.dragMoveEvent
+        self.table_view.dropEvent = self.dropEvent
+
         self.table_model = FileTableModel()
-        self.table_view.setModel(self.table_model)
+
+        # --- Создаём свою прокси для сортировки ---
+        self.sort_proxy = FileSortFilterProxyModel()
+        self.sort_proxy.setSourceModel(self.table_model)
+        self.table_view.setModel(self.sort_proxy)
+
+        # Подключаем сортировку по клику на заголовок
+        header = self.table_view.horizontalHeader()
+        header.sectionClicked.connect(self._on_header_clicked)
 
         self.table_view.doubleClicked.connect(self._on_table_double_click)
         self.table_view.customContextMenuRequested.connect(self._show_context_menu)
@@ -271,6 +314,10 @@ class FileTableView(QWidget):
         self.update_action = QAction(QIcon.fromTheme("document-save"), "Обновить локальную копию", self)
         self.update_action.triggered.connect(self._on_update)
 
+        # Публичная ссылка
+        self.public_link_action = QAction(QIcon.fromTheme("emblem-shared"), "Публичная ссылка", self)
+        self.public_link_action.triggered.connect(self._on_public_link)
+
         self.rename_action = QAction(QIcon.fromTheme("edit-rename"), "Переименовать", self)
         self.rename_action.triggered.connect(self._on_rename)
 
@@ -290,6 +337,7 @@ class FileTableView(QWidget):
         self.context_menu.addAction(self.download_action)
         self.context_menu.addAction(self.sync_action)
         self.context_menu.addAction(self.update_action)
+        self.context_menu.addAction(self.public_link_action)
         self.context_menu.addSeparator()
         self.context_menu.addAction(self.copy_action)
         self.context_menu.addAction(self.paste_action)
@@ -315,10 +363,11 @@ class FileTableView(QWidget):
             list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, item)
 
-            # Формируем отображаемое имя с индикатором статуса
+            # Формируем отображаемое имя
             display_name = item.name
 
-            if not item.is_dir:
+            # Только для облачного провайдера показываем статусы
+            if self._is_cloud_provider and not item.is_dir:
                 is_downloaded = getattr(item, 'is_downloaded', False)
                 is_synced = getattr(item, 'is_synced', False)
 
@@ -332,7 +381,11 @@ class FileTableView(QWidget):
                     display_name = "⬇️ " + display_name
                     list_item.setToolTip(f"{item.name}\n⬇️ Не скачан локально")
             else:
-                list_item.setToolTip(f"{item.name}\n📁 Папка")
+                # Для локального провайдера или папок - без статуса
+                if item.is_dir:
+                    list_item.setToolTip(f"{item.name}\n📁 Папка")
+                else:
+                    list_item.setToolTip(f"{item.name}")
 
             list_item.setText(display_name)
 
@@ -358,7 +411,6 @@ class FileTableView(QWidget):
                 list_item.setToolTip(f"{list_item.toolTip()}\nРазмер: {size_text}")
 
             self.icon_view.addItem(list_item)
-
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -367,26 +419,43 @@ class FileTableView(QWidget):
             size /= 1024
         return f"{size:.1f} PB"
 
-    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider) -> None:
-        """Установка файлов."""
+    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False) -> None:
+        """Установка файлов с указанием типа провайдера."""
         self._current_provider = provider
         self._current_items = files
+        self._is_cloud_provider = is_cloud
+
         self.table_model.set_items(files)
-        self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # Принудительно показываем иконки
+
+        header = self.table_view.horizontalHeader()
+        # Колонка 0 – Имя: растягивается
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        # Колонка 1 – Размер: фиксированная ширина
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(1, 120)
+        # Колонка 2 – Статус: фиксированная ширина, будет скрываться для локального провайдера
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(2, 80)
+
+        self._update_status_column_visibility()
+
         if self._view_mode == "icons":
             self._update_icon_view()
+    def _update_status_column_visibility(self) -> None:
+        """Показать или скрыть колонку статуса в зависимости от провайдера."""
+        if self._is_cloud_provider:
+            self.table_view.setColumnHidden(2, False)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"])
         else:
-            # Для таблицы данные уже обновлены через table_model.set_items
-            pass
+            self.table_view.setColumnHidden(2, True)
+            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", ""])
 
     def get_selected_items(self) -> List[CloudFile]:
-        """Получить выбранные элементы (работает в обоих режимах)."""
         items = []
-
         if self._view_mode == "table":
             for index in self.table_view.selectionModel().selectedRows(0):
-                item = self.table_model.get_item(index.row())
+                src_index = self.sort_proxy.mapToSource(index)
+                item = self.table_model.get_item(src_index.row())
                 if item:
                     items.append(item)
         else:
@@ -394,14 +463,31 @@ class FileTableView(QWidget):
                 item = list_item.data(Qt.ItemDataRole.UserRole)
                 if item:
                     items.append(item)
-
         return items
 
+    def _source_index(self, index: QModelIndex) -> QModelIndex:
+        model = self.table_view.model()
+        print(f"[DEBUG] model type: {type(model).__name__}")
+        if isinstance(model, QSortFilterProxyModel):
+            return model.mapToSource(index)
+        return index
+
     def _on_table_double_click(self, index: QModelIndex) -> None:
-        """Обработка двойного клика в таблице."""
-        item = self.table_model.get_item(index.row())
+        # index – из прокси, преобразуем к исходной модели
+        src_index = self.sort_proxy.mapToSource(index)
+        item = self.table_model.get_item(src_index.row())
         if item:
             self.file_double_clicked.emit(item)
+
+    def _on_header_clicked(self, logical_index):
+        """Переключает сортировку при клике на заголовок."""
+        proxy = self.sort_proxy
+        if proxy.sortColumn() == logical_index:
+            # Переключаем порядок
+            new_order = Qt.SortOrder.DescendingOrder if proxy.sortOrder() == Qt.SortOrder.AscendingOrder else Qt.SortOrder.AscendingOrder
+        else:
+            new_order = Qt.SortOrder.AscendingOrder
+        proxy.sort(logical_index, new_order)
 
     def _on_icon_double_click(self, index) -> None:
         """Обработка двойного клика в иконках."""
@@ -413,9 +499,42 @@ class FileTableView(QWidget):
 
     def _show_context_menu(self, pos: QPoint) -> None:
         """Показ контекстного меню с динамическими опциями."""
+        # Сбрасываем состояние публичной ссылки перед каждым показом меню
+        self.public_link_action.setVisible(False)
+        self.public_link_action.setEnabled(False)
+
         items = self.get_selected_items()
         has_selection = len(items) > 0
 
+        # Определяем, кликнули ли на пустом месте
+        is_empty_area = False
+        if self._view_mode == "icons":
+            if self.icon_view.itemAt(pos) is None:
+                is_empty_area = True
+        else:  # table
+            index = self.table_view.indexAt(pos)
+            if not index.isValid():
+                is_empty_area = True
+
+        # Если клик на пустом месте (и не в mounts:// корне)
+        if is_empty_area and not self._is_mounts_root():
+            empty_menu = QMenu(self)
+            new_folder_action = QAction(QIcon.fromTheme("folder-new"), "Новая папка", self)
+            new_folder_action.triggered.connect(self.new_folder_requested.emit)
+            empty_menu.addAction(new_folder_action)
+
+            paste_action = QAction(QIcon.fromTheme("edit-paste"), "Вставить", self)
+            paste_action.setEnabled(len(self._clipboard_items) > 0)
+            paste_action.triggered.connect(self._on_paste)
+            empty_menu.addAction(paste_action)
+
+            if self._view_mode == "table":
+                empty_menu.exec(self.table_view.viewport().mapToGlobal(pos))
+            else:
+                empty_menu.exec(self.icon_view.viewport().mapToGlobal(pos))
+            return
+
+        # Иначе – стандартное меню для выделенных элементов (без изменений)
         has_downloaded = any(getattr(item, 'is_downloaded', False) for item in items)
         has_not_downloaded = any(not getattr(item, 'is_downloaded', False) for item in items)
         has_outdated = any(
@@ -426,29 +545,25 @@ class FileTableView(QWidget):
         is_root = self._is_mounts_root()
 
         if is_root or is_local:
-            # На локальном диске или в mounts:// облачные операции НЕДОСТУПНЫ
             self.download_action.setEnabled(False)
             self.sync_action.setEnabled(False)
             self.update_action.setEnabled(False)
         else:
-            # В облачной папке облачные операции доступны
             self.download_action.setEnabled(has_selection)
             self.download_action.setVisible(has_selection)
-
             self.sync_action.setEnabled(has_selection and has_downloaded)
             self.sync_action.setVisible(has_selection)
-
             self.update_action.setEnabled(has_selection and has_outdated)
             self.update_action.setVisible(has_selection)
+            self.public_link_action.setVisible(not is_local and not is_root)
+            self.public_link_action.setEnabled(not is_local and not is_root and len(items) == 1)
 
         if is_root:
-            # В корне mounts:// локальные операции блокируем
             self.copy_action.setEnabled(False)
             self.paste_action.setEnabled(False)
             self.rename_action.setEnabled(False)
             self.delete_action.setEnabled(False)
         else:
-            # На локальном диске И в облачной папке локальные операции доступны
             self.copy_action.setEnabled(has_selection and not has_folder)
             self.paste_action.setEnabled(has_selection)
             self.rename_action.setEnabled(has_selection and len(items) == 1)
@@ -458,6 +573,43 @@ class FileTableView(QWidget):
             self.context_menu.exec(self.table_view.viewport().mapToGlobal(pos))
         else:
             self.context_menu.exec(self.icon_view.viewport().mapToGlobal(pos))
+
+    def _on_public_link(self):
+        items = self.get_selected_items()
+        if len(items) == 1:
+            self.public_link_requested.emit(items[0].path)
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """Проверяем, что перетаскивают именно локальные файлы"""
+        if self._is_cloud_provider and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._is_cloud_provider and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """Обрабатываем сброс файлов"""
+        mime_data = event.mimeData()
+
+        if self._is_cloud_provider and mime_data.hasUrls():
+            event.acceptProposedAction()
+
+            # Извлекаем локальные абсолютные пути из URL
+            local_paths = []
+            for url in mime_data.urls():
+                if url.isLocalFile():
+                    local_paths.append(url.toLocalFile())
+
+            # Если нашли локальные файлы - отправляем их через сигнал
+            if local_paths:
+                print(f"DEBUG: Dropped {len(local_paths)} files: {local_paths}")
+                self.files_dropped.emit(local_paths)
+        else:
+            event.ignore()
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""

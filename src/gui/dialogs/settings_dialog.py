@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QTabWidget, QLabel
 )
 from PyQt6.QtCore import QSettings
-
+from core.autostart import enable_autostart, disable_autostart
 
 class SettingsDialog(QDialog):
     """Окно настроек с вкладками."""
@@ -59,6 +59,11 @@ class SettingsDialog(QDialog):
         group_box = QGroupBox("При закрытии окна")
         group_layout = QVBoxLayout(group_box)
 
+        self.autostart_check = QCheckBox("Запускать вместе с системой")
+        current_autostart = self._settings.value("autostart", False, type=bool)
+        self.autostart_check.setChecked(current_autostart)
+        layout.addWidget(self.autostart_check)
+
         self.tray_radio = QRadioButton("Сворачивать в системный трей")
         self.exit_radio = QRadioButton("Полностью закрывать приложение")
 
@@ -106,4 +111,9 @@ class SettingsDialog(QDialog):
         else:
             self._settings.setValue("close_behavior", "ask")
 
+        self._settings.setValue("autostart", self.autostart_check.isChecked())
+        if self.autostart_check.isChecked():
+            enable_autostart()
+        else:
+            disable_autostart()
         self.accept()
