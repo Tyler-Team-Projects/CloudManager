@@ -58,10 +58,10 @@ class LocalFileSystemProvider(BaseCloudProvider):
         items = []
         try:
             for entry in p.iterdir():
-                stat = entry.stat()
-            for entry in p.iterdir():
                 if not self._show_hidden and entry.name.startswith('.'):
                     continue
+
+                stat = entry.stat()
 
                 # Определяем MIME-тип
                 mime_type = None

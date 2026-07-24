@@ -491,6 +491,8 @@ class MainWindow(QMainWindow):
             if bridge._sync_watcher:
                 bridge._sync_watcher.set_interval(sync_interval)
 
+        self._update_sync_status()
+
         # Обновляем текущее представление
         directory = self._load_directory(self._current_path)
 
