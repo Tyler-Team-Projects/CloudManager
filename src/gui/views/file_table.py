@@ -315,6 +315,13 @@ class FileTableView(QWidget):
         self.sort_proxy.setSourceModel(self.table_model)
         self.table_view.setModel(self.sort_proxy)
 
+        header = self.table_view.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.table_view.setColumnWidth(1, 120)
+        self.table_view.setColumnWidth(2, 80)
+
         # Подключаем сортировку по клику на заголовок
         header = self.table_view.horizontalHeader()
         header.sectionClicked.connect(self._on_header_clicked)
@@ -381,62 +388,102 @@ class FileTableView(QWidget):
             self._update_icon_view()
 
     def _update_icon_view(self) -> None:
-        """Обновить отображение иконок со статусом синхронизации."""
-        from core.local.local_provider import LocalFileSystemProvider
-
+        """Обновить отображение иконок (полная перерисовка)."""
         self.icon_view.clear()
         for item in self._current_items:
-            list_item = QListWidgetItem()
-            list_item.setData(Qt.ItemDataRole.UserRole, item)
+            self._add_icon_item(item)
 
-            # Формируем отображаемое имя
-            display_name = item.name
+    def _update_icon_view_incremental(self, new_items: List[CloudFile]) -> None:
+        """Частичное обновление иконок – только изменившиеся элементы."""
+        old_items = {item.path: item for item in self._current_items}
+        new_paths = {item.path for item in new_items}
 
-            # Только для облачного провайдера показываем статусы
-            if self._is_cloud_provider and not item.is_dir:
-                is_downloaded = getattr(item, 'is_downloaded', False)
-                is_synced = getattr(item, 'is_synced', False)
+        # Удаляем исчезнувшие элементы (с конца к началу)
+        for i in range(self.icon_view.count() - 1, -1, -1):
+            list_item = self.icon_view.item(i)
+            data = list_item.data(Qt.ItemDataRole.UserRole)
+            if data and data.path not in new_paths:
+                self.icon_view.takeItem(i)
 
-                if is_downloaded and is_synced:
-                    display_name = "✅ " + display_name
-                    list_item.setToolTip(f"{item.name}\n✅ Синхронизирован")
-                elif is_downloaded and not is_synced:
-                    display_name = "⚠️ " + display_name
-                    list_item.setToolTip(f"{item.name}\n⚠️ Требуется обновление")
-                else:
-                    display_name = "⬇️ " + display_name
-                    list_item.setToolTip(f"{item.name}\n⬇️ Не скачан локально")
+        # Обновляем существующие и добавляем новые
+        for new_item in new_items:
+            if new_item.path in old_items:
+                # Обновить текст и статус у существующего элемента
+                for i in range(self.icon_view.count()):
+                    existing = self.icon_view.item(i)
+                    existing_data = existing.data(Qt.ItemDataRole.UserRole)
+                    if existing_data and existing_data.path == new_item.path:
+                        # Обновить отображаемое имя и статус
+                        display_name = self._build_icon_display_name(new_item)
+                        existing.setText(display_name)
+                        # Обновить тултип
+                        tip = self._build_icon_tooltip(new_item)
+                        existing.setToolTip(tip)
+                        # Иконка для существующего элемента не меняется (только если файл стал папкой или наоборот – маловероятно)
+                        break
             else:
-                # Для локального провайдера или папок - без статуса
-                if item.is_dir:
-                    list_item.setToolTip(f"{item.name}\n📁 Папка")
-                else:
-                    list_item.setToolTip(f"{item.name}")
+                # Добавить новый элемент
+                self._add_icon_item(new_item)
 
-            list_item.setText(display_name)
+        self._current_items = new_items
 
-            # Иконка
-            if item.is_dir:
-                list_item.setIcon(self._get_icon("folder"))
+    def _add_icon_item(self, item: CloudFile) -> None:
+        """Добавить один элемент в QListWidget."""
+        from core.local.local_provider import LocalFileSystemProvider
+
+        list_item = QListWidgetItem()
+        list_item.setData(Qt.ItemDataRole.UserRole, item)
+
+        display_name = self._build_icon_display_name(item)
+        list_item.setText(display_name)
+        list_item.setToolTip(self._build_icon_tooltip(item))
+
+        # Иконка
+        if item.is_dir:
+            list_item.setIcon(self._get_icon("folder"))
+        else:
+            ext = Path(item.name).suffix.lower()
+            image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+            if ext in image_extensions and isinstance(self._current_provider, LocalFileSystemProvider):
+                icon = self._get_thumbnail(item.path, 128)
+                list_item.setIcon(icon)
             else:
-                # Для изображений показываем миниатюру
-                ext = Path(item.name).suffix.lower()
-                image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+                list_item.setIcon(self._get_icon("file"))
 
-                if ext in image_extensions and isinstance(self._current_provider, LocalFileSystemProvider):
-                    # Для локальных файлов - реальная миниатюра
-                    icon = self._get_thumbnail(item.path, 128)
-                    list_item.setIcon(icon)
-                else:
-                    # Для облачных файлов или других типов - стандартная иконка
-                    list_item.setIcon(self._get_icon("file"))
+        self.icon_view.addItem(list_item)
 
-            # Добавляем размер под иконкой
-            if not item.is_dir:
-                size_text = self._format_size(item.size)
-                list_item.setToolTip(f"{list_item.toolTip()}\nРазмер: {size_text}")
+    def _build_icon_display_name(self, item: CloudFile) -> str:
+        """Сформировать отображаемое имя с учётом статуса."""
+        if self._is_cloud_provider and not item.is_dir:
+            is_downloaded = getattr(item, 'is_downloaded', False)
+            is_synced = getattr(item, 'is_synced', False)
+            if is_downloaded and is_synced:
+                return "✅ " + item.name
+            elif is_downloaded and not is_synced:
+                return "⚠️ " + item.name
+            else:
+                return "⬇️ " + item.name
+        return item.name
 
-            self.icon_view.addItem(list_item)
+    def _build_icon_tooltip(self, item: CloudFile) -> str:
+        """Сформировать тултип для элемента."""
+        if self._is_cloud_provider and not item.is_dir:
+            is_downloaded = getattr(item, 'is_downloaded', False)
+            is_synced = getattr(item, 'is_synced', False)
+            if is_downloaded and is_synced:
+                status = "✅ Синхронизирован"
+            elif is_downloaded and not is_synced:
+                status = "⚠️ Требуется обновление"
+            else:
+                status = "⬇️ Не скачан локально"
+        else:
+            status = "📁 Папка" if item.is_dir else ""
+
+        tip = item.name + "\n" + status
+        if not item.is_dir:
+            size_text = self._format_size(item.size)
+            tip += f"\nРазмер: {size_text}"
+        return tip
     def _format_size(self, size: int) -> str:
         """Форматирование размера."""
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -458,28 +505,16 @@ class FileTableView(QWidget):
             if self.sort_proxy.sortColumn() >= 0:
                 self.sort_proxy.sort(self.sort_proxy.sortColumn(), self.sort_proxy.sortOrder())
 
-        header = self.table_view.horizontalHeader()
-        # Колонка 0 – Имя: растягивается
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        # Колонка 1 – Размер: фиксированная ширина
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        self.table_view.setColumnWidth(1, 120)
-        # Колонка 2 – Статус: фиксированная ширина, будет скрываться для локального провайдера
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        self.table_view.setColumnWidth(2, 80)
-
         self._update_status_column_visibility()
 
         if self._view_mode == "icons":
-            self._update_icon_view()
+            if len(self._current_items) == 0:  # первая загрузка
+                self._update_icon_view()
+            else:
+                self._update_icon_view_incremental(files)
+
     def _update_status_column_visibility(self) -> None:
-        """Показать или скрыть колонку статуса в зависимости от провайдера."""
-        if self._is_cloud_provider:
-            self.table_view.setColumnHidden(2, False)
-            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", "Статус"])
-        else:
-            self.table_view.setColumnHidden(2, True)
-            self.table_model.setHorizontalHeaderLabels(["Имя", "Размер", ""])
+        self.table_view.setColumnHidden(2, not self._is_cloud_provider)
 
     def get_selected_items(self) -> List[CloudFile]:
         items = []
