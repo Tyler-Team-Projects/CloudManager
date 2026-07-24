@@ -2,6 +2,7 @@
 import sys
 import os
 import time
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict
@@ -37,7 +38,9 @@ from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
 from .dialogs.close_confirm_dialog import CloseConfirmDialog
 from .dialogs.settings_dialog import SettingsDialog
-
+from .dialogs.download_conflict_dialog import DownloadConflictDialog
+from .dialogs.public_link_dialog import PublicLinkDialog
+from .dialogs.login_dialog import LoginDialog
 
 from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
@@ -93,6 +96,8 @@ class MainWindow(QMainWindow):
         self._update_sync_status()
         self._tray_icon = None
         self._setup_tray()
+        self._apply_settings()
+
 
         self._copy_queue = []  # список кортежей (src_provider, src_path, dest_path, file_name)
         self._copy_success = 0
@@ -108,6 +113,46 @@ class MainWindow(QMainWindow):
             self.hide()
         # Начальная загрузка
         self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
+
+        #Начальные настройки
+        settings = QSettings("TeamTyler", "DiscoHack")
+        default_view = settings.value("default_view_mode", "icons")
+        if default_view == "table":
+            self._toggle_view(True)
+        else:
+            self._toggle_view(False)
+
+        #Скрытые файлы
+        show_hidden = settings.value("show_hidden_files", False, type = bool)
+        local_provider = self._providers.get('local')
+        if local_provider and hasattr(local_provider, "set_show_hidden"):
+            local_provider.set_show_hidden(show_hidden)
+
+        #Папка для скачивания по умолчанию
+        download_folder = settings.value("download_folder", "")
+        if download_folder:
+            cloud_provider = self._providers.get('cloud')
+            if cloud_provider and hasattr(cloud_provider, "_bridge"):
+                cloud_provider._bridge.set_download_path(Path(download_folder))
+
+        #Длительность уведомлений
+        self._toast_duration = settings.value("toast_duration", 10) * 1000
+
+        #Синхронизация
+        sync_enabled = settings.value("sync_enabled", True, type=bool)
+        sync_interval = settings.value("sync_interval", 30, type=int)
+        cloud_provider = self._providers.get('cloud')
+        if cloud_provider and hasattr(cloud_provider, '_bridge'):
+            bridge = cloud_provider._bridge
+            if sync_enabled and bridge.has_token():
+                bridge.start_sync()
+            else:
+                bridge.stop_sync()
+            if bridge._sync_watcher:
+                bridge._sync_watcher.set_interval(sync_interval)
+
+        # Обновляем текущее представление, чтобы применить фильтры/режим
+        self._load_directory(self._current_path)
 
         cloud_provider = self._providers.get('cloud')
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
@@ -404,7 +449,51 @@ class MainWindow(QMainWindow):
     def _on_settings(self):
         """Открыть окно настроек."""
         dlg = SettingsDialog(self)
-        dlg.exec()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_settings()
+
+    def _apply_settings(self):
+        """Применить все настройки из QSettings к текущему состоянию."""
+        settings = QSettings("TeamTyler", "DiscoHack")
+
+        # Режим отображения по умолчанию
+        default_view = settings.value("default_view_mode", "icons")
+        if default_view == "table":
+            self._toggle_view(True)
+        else:
+            self._toggle_view(False)
+
+        # Показ скрытых файлов
+        show_hidden = settings.value("show_hidden_files", False, type=bool)
+        local_provider = self._providers.get('local')
+        if local_provider and hasattr(local_provider, 'set_show_hidden'):
+            local_provider.set_show_hidden(show_hidden)
+
+        # Папка для скачивания
+        download_folder = settings.value("download_folder", "")
+        if download_folder:
+            cloud_provider = self._providers.get('cloud')
+            if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                cloud_provider._bridge.set_download_path(Path(download_folder))
+
+        # Длительность уведомлений
+        self._toast_duration = settings.value("toast_duration", 10) * 1000
+
+        # Фоновая синхронизация
+        sync_enabled = settings.value("sync_enabled", True, type=bool)
+        sync_interval = settings.value("sync_interval", 30, type=int)
+        cloud_provider = self._providers.get('cloud')
+        if cloud_provider and hasattr(cloud_provider, '_bridge'):
+            bridge = cloud_provider._bridge
+            if sync_enabled and bridge.has_token():
+                bridge.start_sync()
+            else:
+                bridge.stop_sync()
+            if bridge._sync_watcher:
+                bridge._sync_watcher.set_interval(sync_interval)
+
+        # Обновляем текущее представление
+        directory = self._load_directory(self._current_path)
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -418,6 +507,9 @@ class MainWindow(QMainWindow):
             self.file_table.set_view_mode("icons")
             self.toggle_view_btn.setIcon(QIcon.fromTheme("view-list-details"))
             self.toggle_view_btn.setText("Вид таблицей")
+
+        settings = QSettings("TeamTyler", "DiscoHack")
+        settings.setValue("default_view_mode", "table" if checked else "icons")
 
     def _setup_statusbar(self) -> None:
         """Настройка статус-бара."""
@@ -567,7 +659,6 @@ class MainWindow(QMainWindow):
         def delete_callback():
             return bridge.delete_public_link(remote_path)
 
-        from gui.dialogs.public_link_dialog import PublicLinkDialog
         dlg = PublicLinkDialog(url, delete_callback, self)
         dlg.exec()
 
@@ -688,6 +779,54 @@ class MainWindow(QMainWindow):
         self._on_refresh()
         self.status_bar.clearMessage()
 
+    def _copy_local_files(self, files: list) -> None:
+        """Копирует локальные файлы из ОС в текущую локальную папку (для drag-and-drop)."""
+        dest_dir = self._current_path
+        if dest_dir.startswith("file://"):
+            dest_dir = dest_dir.replace("file://", "")
+        if dest_dir == "mounts://":
+            dest_dir = str(Path.home())
+
+        dest_path = Path(dest_dir)
+        if not dest_path.exists():
+            QMessageBox.warning(self, "Ошибка", f"Папка {dest_path} не существует")
+            return
+
+        success_count = 0
+        total_files = len(files)
+
+        for file_path in files:
+            src = Path(file_path)
+            if not src.exists():
+                continue
+
+            dest = dest_path / src.name
+
+            # Если файл уже существует, то добавляем номер
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                counter = 1
+                while True:
+                    new_name = f"{stem} ({counter}){suffix}"
+                    new_dest = dest_path / new_name
+                    if not new_dest.exists():
+                        dest = new_dest
+                        break
+                    counter += 1
+
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+                success_count += 1
+            except Exception as e:
+                print(f"Ошибка копирования {file_path}: {e}")
+
+        self.status_bar.showMessage(f"Скопировано {success_count} из {total_files} файлов")
+        self._on_refresh()
+
     def _on_upload(self) -> None:
         """Асинхронная загрузка файлов на диск через диалоговое окно."""
         if self._is_local_provider():
@@ -709,18 +848,19 @@ class MainWindow(QMainWindow):
 
     def upload_files(self, files: list) -> None:
         """Единая точка входа для загрузки файлов (из диалога или из drag and drop)"""
-        if self._is_local_provider():
-            QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
+        if not self._current_provider:
             return
 
+        # локальная папка - копируем файлы
+        if self._is_local_provider() or self._current_path == "mounts://":
+            self._copy_local_files(files)
+            return
+
+        # облако - загружаем на Яндекс.Диск
         if self._current_path == "mounts://":
             QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
             return
 
-        if not self._current_provider:
-            return
-
-        # Проверка места для каждого файла
         files_to_upload = []
         for file_path in files:
             try:
@@ -729,7 +869,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", f"Не удалось получить размер файла {file_path}: {e}")
                 return
 
-            # Проверяем, нужно ли проверять место для этого файла
             if self._need_check_disk_space(file_size):
                 is_enough, free_space, message = self._check_available_space(file_size)
                 if not is_enough:
@@ -918,7 +1057,8 @@ class MainWindow(QMainWindow):
             msg,
             "Обновить список",
             callback=lambda: self._on_refresh(),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
 
@@ -953,7 +1093,6 @@ class MainWindow(QMainWindow):
 
         decisions = {}  # ключ – путь (str), значение – 'rename' / 'overwrite' / 'skip'
         if conflicts:
-            from gui.dialogs.download_conflict_dialog import DownloadConflictDialog
             dlg = DownloadConflictDialog(conflicts, self)
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 return
@@ -1087,7 +1226,8 @@ class MainWindow(QMainWindow):
             "Проверьте соединение с интернетом или попробуйте повторить позже. \n"
             "Закрыть",
             callback=None,
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
     def _on_sync_check(self, items: list) -> None:
@@ -1329,7 +1469,6 @@ class MainWindow(QMainWindow):
 
     def _on_login(self) -> None:
         """Вход в Яндекс.Диск."""
-        from gui.dialogs.login_dialog import LoginDialog
 
         dialog = LoginDialog(self)
         if dialog.exec():
@@ -1610,7 +1749,7 @@ class MainWindow(QMainWindow):
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "CloudManager")
+        settings = QSettings("TeamTyler", "DiscoHack")
         settings.sync()
         return settings.value("show_notifications", True, type=bool)
 
@@ -1625,24 +1764,11 @@ class MainWindow(QMainWindow):
             msg,
             "Открыть папку в облаке",
             callback=lambda: self._navigate_to_provider('cloud', dest_path),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
 
-    def _notify_download_complete(self):
-        """Уведомление о завершении скачивания."""
-        if not self._can_show_notifications():
-            return
-        msg = f"Скачано {self._download_success} из {self._download_total} файлов"
-        downloads_path = str(self._cloud_provider._bridge.downloads_path) if self._cloud_provider else ""
-        toast = ToastNotification(
-            "Скачивание завершено",
-            msg,
-            "Открыть папку Downloads",
-            callback=lambda: self._navigate_to_provider('local', downloads_path),
-            parent=self
-        )
-        toast.show_at_bottom_right()
 
     def _on_file_rename(self, file_item, new_name: str) -> None:
         """Переименование файла/папки."""
@@ -1799,24 +1925,9 @@ class MainWindow(QMainWindow):
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "CloudManager")
+        settings = QSettings("TeamTyler", "DiscoHack")
         settings.sync()
         return settings.value("show_notifications", True, type=bool)
-
-    def _notify_upload_complete(self):
-        """Уведомление о завершении загрузки на диск."""
-        if not self._can_show_notifications():
-            return
-        msg = f"Загружено {self._upload_success} из {self._upload_total} файлов"
-        dest_path = getattr(self, '_upload_dest_path', '/')
-        toast = ToastNotification(
-            "Загрузка завершена",
-            msg,
-            "Открыть папку в облаке",
-            callback=lambda: self._navigate_to_provider('cloud', dest_path),
-            parent=self
-        )
-        toast.show_at_bottom_right()
 
     def _notify_download_complete(self):
         """Уведомление о завершении скачивания."""
@@ -1829,7 +1940,8 @@ class MainWindow(QMainWindow):
             msg,
             "Открыть папку Downloads",
             callback=lambda: self._navigate_to_provider('local', downloads_path),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
     def _is_local_provider(self) -> bool:
