@@ -587,13 +587,12 @@ class MainWindow(QMainWindow):
 
         # 1. Загрузка кеша
         cached_files = self._folder_cache.load(path, provider_type)
-        if cached_files is not None and not force_refresh:
+        if cached_files is not None:
             self._on_directory_loaded(cached_files, from_cache=True)
-            if provider_type == 'local':
+            # Если локальная папка не изменилась — выходим
+            if provider_type == 'local' and not force_refresh:
                 try:
-                    current_mtime = os.path.getmtime(path)
-                    cached_mtime = self._folder_cache.get_mtime(path)
-                    if cached_mtime is not None and abs(current_mtime - cached_mtime) < 1:
+                    if abs(os.path.getmtime(path) - self._folder_cache.get_mtime(path)) < 1:
                         self.status_bar.showMessage("Готово")
                         return
                 except OSError:
@@ -648,23 +647,6 @@ class MainWindow(QMainWindow):
             worker = self.sender()
             if worker in self._active_workers:
                 self._active_workers.remove(worker)
-            if self._current_path == path:
-                self._on_directory_error(err)
-
-        self._list_worker.finished.connect(on_finished)
-        self._list_worker.error.connect(on_error)
-        self._list_worker.start()
-
-        def on_finished(files):
-            if self._list_worker in self._active_workers:
-                self._active_workers.remove(self._list_worker)
-            # Обновляем только если путь всё ещё совпадает
-            if self._current_path == path:
-                self._on_directory_loaded(files)
-
-        def on_error(err):
-            if self._list_worker in self._active_workers:
-                self._active_workers.remove(self._list_worker)
             if self._current_path == path:
                 self._on_directory_error(err)
 
@@ -729,7 +711,7 @@ class MainWindow(QMainWindow):
             self.disk_label.setVisible(False)
             self.disk_progress.setVisible(False)
 
-        self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
+        self.file_table.set_files(files, self._current_provider, self._is_current_cloud, path=self._current_path)
         self.file_table.set_current_path(self._current_path)
         self.address_bar.set_path(self._current_path)
         self.items_label.setText(f"Элементов: {len(files)}")
@@ -1326,7 +1308,8 @@ class MainWindow(QMainWindow):
                     self.file_table.set_files(
                         self.file_table._current_items,
                         self._current_provider,
-                        self._is_current_cloud
+                        self._is_current_cloud,
+                        path=self._current_path
                     )
                     break
 
@@ -1588,7 +1571,7 @@ class MainWindow(QMainWindow):
             self._pre_search_path = self._current_path
 
             is_cloud = (self._current_provider == self._providers.get('cloud'))
-            self.file_table.set_files(results, self._current_provider, is_cloud)
+            self.file_table.set_files(results, self._current_provider, is_cloud, path=self._current_path)
             self.items_label.setText(f"Найдено: {len(results)}")
             self.status_bar.showMessage(f"Найдено {len(results)} элементов")
             self.address_bar.set_path(f"Результаты поиска ({len(results)})")

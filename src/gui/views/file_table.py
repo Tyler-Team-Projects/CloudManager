@@ -231,6 +231,8 @@ class FileTableView(QWidget):
         self._clipboard_items: List[CloudFile] = []
         self._is_cloud_provider = False
         self._setup_ui()
+        self._last_icon_path = None
+        self._icon_view_initialized = False
         self._setup_context_menu()
 
     def _setup_ui(self) -> None:
@@ -492,24 +494,32 @@ class FileTableView(QWidget):
             size /= 1024
         return f"{size:.1f} PB"
 
-    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False) -> None:
-        """Установка файлов с указанием типа провайдера."""
+    def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False,
+                  path: str = None) -> None:
         self._current_provider = provider
         self._current_items = files
+        provider_changed = (self._is_cloud_provider != is_cloud)
         self._is_cloud_provider = is_cloud
 
+        # Определяем, изменился ли путь
+        path_changed = (path is not None and self._last_icon_path != path)
+        if path is not None:
+            self._last_icon_path = path
+
         if self.table_model.rowCount() == 0:
-            self.table_model.set_items(files)  # первая загрузка
+            self.table_model.set_items(files)
         else:
-            self.table_model.update_items(files)  # частичное обновление
+            self.table_model.update_items(files)
             if self.sort_proxy.sortColumn() >= 0:
                 self.sort_proxy.sort(self.sort_proxy.sortColumn(), self.sort_proxy.sortOrder())
 
         self._update_status_column_visibility()
 
         if self._view_mode == "icons":
-            if len(self._current_items) == 0:  # первая загрузка
+            # Полная перерисовка при первом показе, смене провайдера или смене папки
+            if not self._icon_view_initialized or provider_changed or path_changed:
                 self._update_icon_view()
+                self._icon_view_initialized = True
             else:
                 self._update_icon_view_incremental(files)
 
