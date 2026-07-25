@@ -209,6 +209,38 @@ class LocalFileSystemProvider(BaseCloudProvider):
         self._mounts_cache_time = now
         return mounts
 
+    def get_absolute_path(self, relative_path: str) -> str:
+        """
+        Получить абсолютный путь из относительного пути.
+
+        Args:
+            relative_path: относительный путь (например, "Documents/file.txt")
+
+        Returns:
+            абсолютный путь (например, "/home/user/Documents/file.txt")
+        """
+        # Если путь уже абсолютный — возвращаем как есть
+        if relative_path.startswith('/') or relative_path.startswith('file://'):
+            if relative_path.startswith('file://'):
+                return relative_path.replace('file://', '')
+            return relative_path
+
+        # Если путь — это mounts:// — возвращаем домашнюю папку
+        if relative_path == self.MOUNTS_ROOT:
+            return str(Path.home())
+
+        # Строим абсолютный путь от _current_path
+        base = self._current_path
+        if base.startswith('file://'):
+            base = base.replace('file://', '')
+        if base == self.MOUNTS_ROOT:
+            base = str(Path.home())
+
+        # Убираем начальный слеш у relative_path если есть
+        clean_relative = relative_path.lstrip('/')
+
+        return str(Path(base) / clean_relative)
+
     def _list_mount_points(self) -> List[CloudFile]:
         """Список точек монтирования как CloudFile."""
         items = []
