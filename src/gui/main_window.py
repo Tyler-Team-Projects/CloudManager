@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
                 cloud_provider._bridge.set_download_path(Path(download_folder))
 
         #Длительность уведомлений
-        self._toast_duration = settings.value("toast_duration", 10) * 1000
+        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
 
         #Синхронизация
         sync_enabled = settings.value("sync_enabled", True, type=bool)
@@ -483,7 +483,7 @@ class MainWindow(QMainWindow):
                 cloud_provider._bridge.set_download_path(Path(download_folder))
 
         # Длительность уведомлений
-        self._toast_duration = settings.value("toast_duration", 10) * 1000
+        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
 
         # Фоновая синхронизация
         sync_enabled = settings.value("sync_enabled", True, type=bool)
