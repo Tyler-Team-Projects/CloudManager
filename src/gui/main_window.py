@@ -863,6 +863,11 @@ class MainWindow(QMainWindow):
 
     def _finish_upload(self) -> None:
         """Завершение процесса загрузки: обновление таблицы и очистка статус-бара."""
+        # Для облачного провайдера не вызываем _on_refresh, чтобы не перезагружать список
+        # Файлы уже добавлены через add_file, а статус обновится фоновой синхронизацией
+        if not self._is_local_provider():
+            self.status_bar.clearMessage()
+            return
         self._on_refresh()
         self.status_bar.clearMessage()
 
@@ -1078,6 +1083,17 @@ class MainWindow(QMainWindow):
                     file_size = uploaded_item.stat().st_size
                     self._update_disk_cache_after_operation(file_size, is_upload=True)
                 self._update_disk_info()
+                new_file = CloudFile(
+                    name=uploaded_item.name,
+                    path=remote_path,
+                    is_dir=False,
+                    size=file_size,
+                    modified_at=datetime.fromtimestamp(uploaded_item.stat().st_mtime),
+                    mime_type=None,
+                    file_id=remote_path
+                )
+                self.file_table.add_file(new_file)
+                self.items_label.setText(f"Элементов: {len(self.file_table._current_items)}")
         self._upload_next()
 
     def _on_upload_error(self, error: str) -> None:
