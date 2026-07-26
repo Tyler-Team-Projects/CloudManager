@@ -2,15 +2,16 @@
 import sys
 import os
 import time
+import shutil
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QSplitter, QHBoxLayout,
     QMenuBar, QMenu, QToolBar, QStatusBar, QMessageBox,
     QFileDialog, QSizePolicy, QInputDialog, QLabel, QProgressBar,
-    QSystemTrayIcon, QDialog, QApplication
+    QSystemTrayIcon, QDialog, QApplication, QProgressBar, QPushButton
 )
 from PyQt6.QtCore import Qt, QSize, QTimer, QSettings
 from PyQt6.QtGui import (
@@ -28,18 +29,21 @@ from api.common.exceptions import CloudError, CloudNotFoundError
 from core.local.local_provider import LocalFileSystemProvider
 from core.local.cloud_bridge import CloudBridge
 from core.local.cloud_provider_adapter import CloudProviderAdapter
+from core.cache_manager import FolderCache
 
 from .views.side_bar import SideBar
 from .views.file_table import FileTableView
 from .views.address_bar import AddressBar
 from .workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker, DeleteWorker
+from .workers.hash_update_worker import HashUpdateWorker
 from .dialogs.progress_dialog import ProgressDialog
 from .dialogs.toast import ToastNotification
 from .dialogs.close_confirm_dialog import CloseConfirmDialog
 from .dialogs.settings_dialog import SettingsDialog
+from .dialogs.download_conflict_dialog import DownloadConflictDialog
+from .dialogs.public_link_dialog import PublicLinkDialog
+from .dialogs.login_dialog import LoginDialog
 
-
-from PyQt6.QtWidgets import QProgressBar, QPushButton
 class MainWindow(QMainWindow):
     """Главное окно облачного менеджера."""
 
@@ -59,6 +63,7 @@ class MainWindow(QMainWindow):
         self._disk_info_timer = None
         self._cached_disk_info = None
         self._disk_info_cache_timer = None
+        self._folder_cache = FolderCache()
 
         self._upload_queue = []
         self._upload_success = 0
@@ -93,10 +98,63 @@ class MainWindow(QMainWindow):
         self._update_sync_status()
         self._tray_icon = None
         self._setup_tray()
+        self._apply_settings()
 
 
+        self._copy_queue = []  # список кортежей (src_provider, src_path, dest_path, file_name)
+        self._copy_success = 0
+        self._copy_total = 0
+        self._copy_source_provider = None  # провайдер-источник (для скачивания)
+        self._copy_dest_provider = None  # текущий провайдер (для вставки)
+
+        self._start_minimized = (
+                QSettings("TeamTyler", "DiscoHack").value("autostart", False, type=bool)
+                and '--minimized' in sys.argv
+        )
+        if self._start_minimized:
+            self.hide()
         # Начальная загрузка
         self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
+
+        #Начальные настройки
+        settings = QSettings("TeamTyler", "DiscoHack")
+        default_view = settings.value("default_view_mode", "icons")
+        if default_view == "table":
+            self._toggle_view(True)
+        else:
+            self._toggle_view(False)
+
+        #Скрытые файлы
+        show_hidden = settings.value("show_hidden_files", False, type = bool)
+        local_provider = self._providers.get('local')
+        if local_provider and hasattr(local_provider, "set_show_hidden"):
+            local_provider.set_show_hidden(show_hidden)
+
+        #Папка для скачивания по умолчанию
+        download_folder = settings.value("download_folder", "")
+        if download_folder:
+            cloud_provider = self._providers.get('cloud')
+            if cloud_provider and hasattr(cloud_provider, "_bridge"):
+                cloud_provider._bridge.set_download_path(Path(download_folder))
+
+        #Длительность уведомлений
+        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
+
+        #Синхронизация
+        sync_enabled = settings.value("sync_enabled", True, type=bool)
+        sync_interval = settings.value("sync_interval", 30, type=int)
+        cloud_provider = self._providers.get('cloud')
+        if cloud_provider and hasattr(cloud_provider, '_bridge'):
+            bridge = cloud_provider._bridge
+            if sync_enabled and bridge.has_token():
+                bridge.start_sync()
+            else:
+                bridge.stop_sync()
+            if bridge._sync_watcher:
+                bridge._sync_watcher.set_interval(sync_interval)
+
+        # Обновляем текущее представление, чтобы применить фильтры/режим
+        self._load_directory(self._current_path)
 
         cloud_provider = self._providers.get('cloud')
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
@@ -123,7 +181,7 @@ class MainWindow(QMainWindow):
     def _setup_ui(self) -> None:
         """Настройка основного UI."""
         self.setWindowTitle("Cloud Manager")
-        self.setMinimumSize(1400, 600)
+        self.setMinimumSize(1000, 600)
         self.resize(1200, 800)
 
         central_widget = QWidget()
@@ -355,6 +413,10 @@ class MainWindow(QMainWindow):
         settings = QSettings("TeamTyler", "DiscoHack")
         behavior = settings.value("close_behavior", "ask")
 
+        if hasattr(self, '_hash_worker') and self._hash_worker.isRunning():
+            self._hash_worker.requestInterruption()
+            self._hash_worker.wait(1000)
+
         if behavior == "tray":
             if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
                 self.hide()
@@ -393,7 +455,54 @@ class MainWindow(QMainWindow):
     def _on_settings(self):
         """Открыть окно настроек."""
         dlg = SettingsDialog(self)
-        dlg.exec()
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._apply_settings()
+
+    def _apply_settings(self):
+        """Применить все настройки из QSettings к текущему состоянию."""
+        settings = QSettings("TeamTyler", "DiscoHack")
+
+        # Режим отображения по умолчанию
+        default_view = settings.value("default_view_mode", "icons")
+        if default_view == "table":
+            self._toggle_view(True)
+        else:
+            self._toggle_view(False)
+
+        # Показ скрытых файлов
+        show_hidden = settings.value("show_hidden_files", False, type=bool)
+        local_provider = self._providers.get('local')
+        if local_provider and hasattr(local_provider, 'set_show_hidden'):
+            local_provider.set_show_hidden(show_hidden)
+
+        # Папка для скачивания
+        download_folder = settings.value("download_folder", "")
+        if download_folder:
+            cloud_provider = self._providers.get('cloud')
+            if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                cloud_provider._bridge.set_download_path(Path(download_folder))
+
+        # Длительность уведомлений
+        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
+
+        # Фоновая синхронизация
+        sync_enabled = settings.value("sync_enabled", True, type=bool)
+        sync_interval = settings.value("sync_interval", 30, type=int)
+        cloud_provider = self._providers.get('cloud')
+        if cloud_provider and hasattr(cloud_provider, '_bridge'):
+            bridge = cloud_provider._bridge
+            if sync_enabled and bridge.has_token():
+                bridge.start_sync()
+            else:
+                bridge.stop_sync()
+            if bridge._sync_watcher:
+                bridge._sync_watcher.set_interval(sync_interval)
+        cloud_provider._bridge._sync_watcher.hash_update_callback = self._start_hash_update_callback
+
+        self._update_sync_status()
+
+        # Обновляем текущее представление
+        directory = self._load_directory(self._current_path)
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -407,6 +516,9 @@ class MainWindow(QMainWindow):
             self.file_table.set_view_mode("icons")
             self.toggle_view_btn.setIcon(QIcon.fromTheme("view-list-details"))
             self.toggle_view_btn.setText("Вид таблицей")
+
+        settings = QSettings("TeamTyler", "DiscoHack")
+        settings.setValue("default_view_mode", "table" if checked else "icons")
 
     def _setup_statusbar(self) -> None:
         """Настройка статус-бара."""
@@ -443,7 +555,9 @@ class MainWindow(QMainWindow):
         self.file_table.copy_requested.connect(self._on_copy_files)
         self.file_table.paste_requested.connect(self._on_paste_files)
         self.file_table.sync_check_requested.connect(self._on_sync_check)
-
+        self.file_table.new_folder_requested.connect(self._on_new_folder)
+        self.file_table.public_link_requested.connect(self._on_public_link)
+        self.file_table.files_dropped.connect(self.upload_files)
 
     def _load_stylesheet(self) -> None:
         """Загрузка стилей."""
@@ -467,29 +581,78 @@ class MainWindow(QMainWindow):
         self._current_path = path
         self._load_directory(path)
 
-    def _load_directory(self, path: str) -> None:
-        """Загрузка содержимого директории."""
+    def _load_directory(self, path: str, force_refresh: bool = False) -> None:
         if not self._current_provider:
+            return
+
+        provider_type = 'local' if hasattr(self._current_provider, 'get_mounts_root') else 'cloud'
+
+        # 1. Загрузка кеша
+        cached_files = self._folder_cache.load(path, provider_type)
+
+        if cached_files is not None:
+            self._on_directory_loaded(cached_files, from_cache=True)
+
+        if cached_files is not None:
+            self._on_directory_loaded(cached_files, from_cache=True)
+            # Если локальная папка не изменилась — выходим без воркера
+            if provider_type == 'local' and not force_refresh:
+                try:
+                    if abs(os.path.getmtime(path) - self._folder_cache.get_mtime(path)) < 1:
+                        self.status_bar.showMessage("Готово")
+                        return
+                except OSError:
+                    pass
+        else:
+            cached_files = None
+
+        # 2. Защита от повторного запроса
+        if self._list_worker and self._list_worker.isRunning() and getattr(self._list_worker, 'path', '') == path:
             return
 
         self.status_bar.showMessage(f"Загрузка {path}...")
 
-        # Не ждём предыдущий воркер, просто создаём новый.
-        # Предыдущий воркер продолжит работать в фоне, но его сигналы
-        # будут проверять, актуален ли ещё путь.
+        if self._list_worker and self._list_worker.isRunning():
+            self._list_worker.requestInterruption()
+
         self._list_worker = ListDirectoryWorker(self._current_provider, path)
+        self._list_worker.path = path
         self._active_workers.append(self._list_worker)
 
         def on_finished(files):
-            if self._list_worker in self._active_workers:
-                self._active_workers.remove(self._list_worker)
-            # Обновляем только если путь всё ещё совпадает
-            if self._current_path == path:
-                self._on_directory_loaded(files)
+            if self._current_path != path:
+                return
+            provider_type = 'local' if hasattr(self._current_provider, 'get_mounts_root') else 'cloud'
+            self._folder_cache.save(path, provider_type, files)
+
+            #print(f"[CACHE] Saved to cache: {len(files)} items for {path}")
+
+            if provider_type == 'cloud' and files:
+                # Остановить предыдущий воркер, если ещё работает
+                if hasattr(self, '_hash_worker') and self._hash_worker.isRunning():
+                    self._hash_worker.requestInterruption()
+                    self._hash_worker.wait(500)
+                cloud_provider = self._providers.get('cloud')
+                if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                    self._hash_worker = HashUpdateWorker(
+                        cloud_provider._bridge,
+                        files,
+                        self._folder_cache
+                    )
+                    self._hash_worker.start()
+
+
+
+            if cached_files is None or not self._files_are_equal(cached_files, files):
+                self._on_directory_loaded(files, from_cache=False)
+
+            else:
+                self.status_bar.showMessage("Готово")
 
         def on_error(err):
-            if self._list_worker in self._active_workers:
-                self._active_workers.remove(self._list_worker)
+            worker = self.sender()
+            if worker in self._active_workers:
+                self._active_workers.remove(worker)
             if self._current_path == path:
                 self._on_directory_error(err)
 
@@ -497,8 +660,23 @@ class MainWindow(QMainWindow):
         self._list_worker.error.connect(on_error)
         self._list_worker.start()
 
-    def _on_directory_loaded(self, files: list) -> None:
-        """Обработка загрузки директории."""
+    def _start_hash_update_callback(self):
+        """Запускает фоновое обновление хешей для текущей облачной папки."""
+        if not self._current_provider or not self._is_current_cloud:
+            return
+        cloud_provider = self._providers.get('cloud')
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            return
+        bridge = cloud_provider._bridge
+        items = self.file_table._current_items
+        if items:
+            if hasattr(self, '_hash_worker') and self._hash_worker.isRunning():
+                self._hash_worker.requestInterruption()
+                self._hash_worker.wait(500)
+            self._hash_worker = HashUpdateWorker(bridge, items, self._folder_cache)
+            self._hash_worker.start()
+
+    def _on_directory_loaded(self, files: list, from_cache: bool = False) -> None:
         self._is_current_cloud = False
 
         if self._current_provider == self._providers.get('cloud'):
@@ -506,18 +684,19 @@ class MainWindow(QMainWindow):
             cloud_provider = self._current_provider
             if hasattr(cloud_provider, '_bridge'):
                 bridge = cloud_provider._bridge
+                downloads_path = bridge.downloads_path
                 for file_item in files:
                     if not file_item.is_dir:
-                        local_file = bridge.downloads_path / file_item.name
+                        local_file = downloads_path / file_item.name
                         file_item.is_downloaded = local_file.exists()
-
                         if file_item.is_downloaded:
-                            sync_info = bridge.check_file_sync(file_item.path)
-                            file_item.is_synced = sync_info.get('is_synced', False)
-                        else:
-                            file_item.is_synced = False
+                            cached = self._folder_cache.get_hashes(file_item.path)
+                            if cached:
+                                file_item.is_synced = (cached.get('remote_hash') == cached.get('local_hash'))
+                            else:
+                                file_item.is_synced = False
 
-        # Управление отображением элементов Яндекс.Диска
+        # Управление виджетами диска
         if self._is_current_cloud:
             self.disk_info_widget.setVisible(True)
             self.disk_label.setVisible(True)
@@ -530,12 +709,45 @@ class MainWindow(QMainWindow):
             self.disk_label.setVisible(False)
             self.disk_progress.setVisible(False)
 
-        self.file_table.set_files(files, self._current_provider, self._is_current_cloud)
+        self.file_table.set_files(files, self._current_provider, self._is_current_cloud, path=self._current_path)
         self.file_table.set_current_path(self._current_path)
         self.address_bar.set_path(self._current_path)
         self.items_label.setText(f"Элементов: {len(files)}")
-        self.status_bar.showMessage(f"Загружено {len(files)} элементов")
+
+        if from_cache:
+            self.status_bar.showMessage("Загружено из кеша")
+        else:
+            self.status_bar.showMessage(f"Загружено {len(files)} элементов")
+
         self._update_toolbar_buttons()
+
+    def _files_are_equal(self, old_files: List[CloudFile], new_files: List[CloudFile]) -> bool:
+        """Сравнивает списки файлов по именам и размерам."""
+        if len(old_files) != len(new_files):
+            return False
+        old_dict = {f.name: f.size for f in old_files}
+        new_dict = {f.name: f.size for f in new_files}
+        return old_dict == new_dict
+
+    def _on_public_link(self, remote_path: str):
+        """Показать диалог управления публичной ссылкой."""
+        cloud_provider = self._providers.get('cloud')
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            QMessageBox.warning(self, "Ошибка", "Облачное хранилище недоступно.")
+            return
+
+        bridge = cloud_provider._bridge
+        if not bridge.has_token():
+            QMessageBox.warning(self, "Ошибка", "Необходимо авторизоваться в Яндекс.Диске.")
+            return
+
+        url = bridge.get_public_link(remote_path)
+
+        def delete_callback():
+            return bridge.delete_public_link(remote_path)
+
+        dlg = PublicLinkDialog(url, delete_callback, self)
+        dlg.exec()
 
     def _update_toolbar_buttons(self) -> None:
         """Обновление состояния кнопок тулбара."""
@@ -576,9 +788,8 @@ class MainWindow(QMainWindow):
         self._update_toolbar_buttons()
 
     def _on_refresh(self) -> None:
-        """Обновление текущей папки."""
         if self._current_provider and self._current_path:
-            self._load_directory(self._current_path)
+            self._load_directory(self._current_path, force_refresh=True)
 
     def _on_search(self, query: str) -> None:
         """Поиск файлов рекурсивно."""
@@ -599,6 +810,7 @@ class MainWindow(QMainWindow):
 
         # Запускаем поиск в отдельном потоке
         self._search_worker = SearchWorker(self._current_provider, self._current_path, query)
+        self._active_workers.append(self._search_worker)
         self._search_worker.finished.connect(self._on_search_finished)
         self._search_worker.error.connect(self._on_search_error)
         self._search_worker.start()
@@ -654,8 +866,56 @@ class MainWindow(QMainWindow):
         self._on_refresh()
         self.status_bar.clearMessage()
 
+    def _copy_local_files(self, files: list) -> None:
+        """Копирует локальные файлы из ОС в текущую локальную папку (для drag-and-drop)."""
+        dest_dir = self._current_path
+        if dest_dir.startswith("file://"):
+            dest_dir = dest_dir.replace("file://", "")
+        if dest_dir == "mounts://":
+            dest_dir = str(Path.home())
+
+        dest_path = Path(dest_dir)
+        if not dest_path.exists():
+            QMessageBox.warning(self, "Ошибка", f"Папка {dest_path} не существует")
+            return
+
+        success_count = 0
+        total_files = len(files)
+
+        for file_path in files:
+            src = Path(file_path)
+            if not src.exists():
+                continue
+
+            dest = dest_path / src.name
+
+            # Если файл уже существует, то добавляем номер
+            if dest.exists():
+                stem = dest.stem
+                suffix = dest.suffix
+                counter = 1
+                while True:
+                    new_name = f"{stem} ({counter}){suffix}"
+                    new_dest = dest_path / new_name
+                    if not new_dest.exists():
+                        dest = new_dest
+                        break
+                    counter += 1
+
+            try:
+                if src.is_dir():
+                    shutil.copytree(src, dest)
+                else:
+                    shutil.copy2(src, dest)
+                success_count += 1
+            except Exception as e:
+                print(f"Ошибка копирования {file_path}: {e}")
+
+        self.status_bar.showMessage(f"Скопировано {success_count} из {total_files} файлов")
+        self._on_refresh()
+
     def _on_upload(self) -> None:
-        """Асинхронная загрузка файлов на диск (в облако)."""
+        """Асинхронная загрузка файлов на диск через диалоговое окно."""
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
             return
@@ -671,14 +931,31 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
+        self.upload_files(files)
+
+    def upload_files(self, files: list) -> None:
+        """Единая точка входа для загрузки файлов (из диалога или из drag and drop)"""
+        if not self._current_provider:
+            return
+
+        # локальная папка - копируем файлы
+        if self._is_local_provider() or self._current_path == "mounts://":
+            self._copy_local_files(files)
+            return
+
+        # облако - загружаем на Яндекс.Диск
+        if self._current_path == "mounts://":
+            QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
+            return
+
         files_to_upload = []
-        total_size = 0
-
         for file_path in files:
-            file_size = os.path.getsize(file_path)
-            total_size += file_size
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError as e:
+                QMessageBox.warning(self, "Ошибка", f"Не удалось получить размер файла {file_path}: {e}")
+                return
 
-            # нужно ли проверять место для этого файла
             if self._need_check_disk_space(file_size):
                 is_enough, free_space, message = self._check_available_space(file_size)
                 if not is_enough:
@@ -696,7 +973,6 @@ class MainWindow(QMainWindow):
         self._upload_dest_path = self._current_path
 
         if self._upload_queue:
-            self._upload_dest_path = self._current_path
             self.status_bar.showMessage(f"Загрузка 0 из {self._upload_total}...")
             self._upload_next()
 
@@ -724,6 +1000,7 @@ class MainWindow(QMainWindow):
             local_path,
             remote_path
         )
+        self._active_workers.append(self._upload_worker)
         self._upload_worker.progress.connect(self._on_upload_progress)
         self._upload_worker.finished.connect(self._on_upload_finished)
         self._upload_worker.error.connect(self._on_upload_error)
@@ -767,6 +1044,7 @@ class MainWindow(QMainWindow):
             str(local_path),
             file_item.size
         )
+        self._active_workers.append(self._update_worker)
         self._update_worker.progress.connect(self._on_update_progress)
         self._update_worker.finished.connect(self._on_update_finished)
         self._update_worker.error.connect(self._on_update_error)
@@ -789,6 +1067,9 @@ class MainWindow(QMainWindow):
 
     def _on_upload_finished(self, success: bool, remote_path: str) -> None:
         """Файл успешно загружен."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         if self._upload_queue:
             uploaded_item = self._upload_queue.pop(0)
             if success:
@@ -801,6 +1082,9 @@ class MainWindow(QMainWindow):
 
     def _on_upload_error(self, error: str) -> None:
         """Ошибка загрузки файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         print(f"[ERROR] Upload failed: {error}")
         if self._upload_queue:
             self._upload_queue.pop(0)
@@ -823,6 +1107,9 @@ class MainWindow(QMainWindow):
 
     def _on_update_finished(self, success: bool, local_path: str, remote_path: str) -> None:
         """Завершение обновления одного файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         if self._update_queue:
             updated_item = self._update_queue.pop(0)
 
@@ -853,6 +1140,9 @@ class MainWindow(QMainWindow):
 
     def _on_update_error(self, error: str) -> None:
         """Ошибка обновления файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         print(f"[ERROR] Update failed: {error}")
         if self._update_queue:
             self._update_queue.pop(0)
@@ -868,12 +1158,13 @@ class MainWindow(QMainWindow):
             msg,
             "Обновить список",
             callback=lambda: self._on_refresh(),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
 
     def _on_download(self) -> None:
-        """Скачивание выбранных файлов."""
+        """Скачивание выбранных файлов с подтверждением при конфликтах."""
         if self._current_path == "mounts://":
             QMessageBox.warning(self, "Ошибка", "Скачивание запрещено в корневой директории")
             return
@@ -892,15 +1183,35 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
+        files_to_download = [f for f in selected if not f.is_dir]
+        if not files_to_download:
+            QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
+            return
+
+        # Проверяем конфликты
+        downloads_path = cloud_provider._bridge.downloads_path
+        conflicts = [item for item in files_to_download if (downloads_path / item.name).exists()]
+
+        decisions = {}  # ключ – путь (str), значение – 'rename' / 'overwrite' / 'skip'
+        if conflicts:
+            dlg = DownloadConflictDialog(conflicts, self)
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return
+            decisions = dlg.get_decisions()  # dict[str, str]
+
         self._operation_in_progress = True
 
-        # Очищаем очередь загрузки
-        self._upload_queue = []
-        self._upload_success = 0
-        self._upload_total = 0
-        self._upload_provider = None
+        self._download_queue = []
+        for item in files_to_download:
+            action = decisions.get(item.path, 'rename')
+            if action == 'skip':
+                continue
+            if action == 'overwrite':
+                local_path = downloads_path / item.name
+            else:  # rename
+                local_path = cloud_provider._bridge._get_download_path(item.path, force_overwrite=False)
+            self._download_queue.append((item, local_path))
 
-        self._download_queue = [f for f in selected if not f.is_dir]
         self._download_success = 0
         self._download_total = len(self._download_queue)
         self._cloud_provider = cloud_provider
@@ -909,7 +1220,7 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Скачивание 0 из {self._download_total}...")
             self._download_next()
         else:
-            self.progress_bar.setVisible(False)
+            self._operation_in_progress = False
             QMessageBox.information(self, "Инфо", "Нет файлов для скачивания")
 
     def _download_next(self) -> None:
@@ -928,12 +1239,10 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
-        file_item = self._download_queue[0]
+        file_item, local_path = self._download_queue.pop(0)
         current = self._download_success + 1
 
         self.status_bar.showMessage(f"Скачивание: {file_item.name} ({current} из {self._download_total})")
-
-        local_path = self._cloud_provider._bridge._get_download_path(file_item.path)
 
         self._download_worker = DownloadWorker(
             self._cloud_provider,
@@ -941,6 +1250,7 @@ class MainWindow(QMainWindow):
             str(local_path),
             file_item.size
         )
+        self._active_workers.append(self._download_worker)
         self._download_worker.progress.connect(self._on_download_progress)
         self._download_worker.finished.connect(self._on_download_finished)
         self._download_worker.error.connect(self._on_download_error)
@@ -952,43 +1262,38 @@ class MainWindow(QMainWindow):
             current_mb = current / (1024 * 1024)
             total_mb = total / (1024 * 1024)
             percent = int(current / total * 100)
-            file_name = self._download_queue[0].name if self._download_queue else ""
+            file_name = self._download_queue[0][0].name if self._download_queue else ""
             self.status_bar.showMessage(
                 f"Скачивание: {file_name} - {current_mb:.1f}/{total_mb:.1f} МБ ({percent}%)"
             )
         else:
             current_mb = current / (1024 * 1024)
-            file_name = self._download_queue[0].name if self._download_queue else ""
+            file_name = self._download_queue[0][0].name if self._download_queue else ""
             self.status_bar.showMessage(f"Скачивание: {file_name} - {current_mb:.1f} МБ")
 
     def _on_download_finished(self, success: bool, local_path: str, remote_path: str) -> None:
         """Завершение скачивания одного файла."""
-        if self._download_queue:
-            downloaded_item = self._download_queue.pop(0)
-
-            if success:
-                self._download_success += 1
-                # Просто помечаем, что файл скачан (без сетевого запроса)
-                downloaded_item.is_downloaded = True
-                downloaded_item.is_synced = False  # или можно не трогать
-
-                # Сохраняем метаданные о факте скачивания
-                if os.path.exists(local_path):
-                    from datetime import datetime
-                    cloud_provider = self._providers.get('cloud')
-                    if cloud_provider and hasattr(cloud_provider, '_bridge'):
-                        bridge = cloud_provider._bridge
-                        bridge.download_metadata[local_path] = {
-                            'remote_path': remote_path,
-                            'downloaded_at': datetime.now().isoformat(),
-                            'size': os.path.getsize(local_path),
-                            'name': Path(local_path).name,
-                            'remote_hash': None,
-                            'local_hash': None,
-                            'is_synced': False
-                        }
-                        bridge._save_metadata()
-
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        if success:
+            self._download_success += 1
+            # Сохраняем метаданные о скачанном файле
+            if os.path.exists(local_path):
+                from datetime import datetime
+                cloud_provider = self._providers.get('cloud')
+                if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                    bridge = cloud_provider._bridge
+                    bridge.download_metadata[local_path] = {
+                        'remote_path': remote_path,
+                        'downloaded_at': datetime.now().isoformat(),
+                        'size': os.path.getsize(local_path),
+                        'name': Path(local_path).name,
+                        'remote_hash': None,
+                        'local_hash': None,
+                        'is_synced': False
+                    }
+                    bridge._save_metadata()
         self._download_next()
 
     def _update_file_status(self, remote_path: str, updated_item: CloudFile) -> None:
@@ -1001,14 +1306,18 @@ class MainWindow(QMainWindow):
                     self.file_table.set_files(
                         self.file_table._current_items,
                         self._current_provider,
-                        self._is_current_cloud
+                        self._is_current_cloud,
+                        path=self._current_path
                     )
                     break
 
     def _on_download_error(self, error: str) -> None:
         """Ошибка скачивания."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         if self._download_queue:
-            failed_item = self._download_queue.pop(0)
+            failed_item, _ = self._download_queue.pop(0)
             file_name = failed_item.name
         else:
             file_name = "Неизвестный файл"
@@ -1026,7 +1335,8 @@ class MainWindow(QMainWindow):
             "Проверьте соединение с интернетом или попробуйте повторить позже. \n"
             "Закрыть",
             callback=None,
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
     def _on_sync_check(self, items: list) -> None:
@@ -1195,12 +1505,16 @@ class MainWindow(QMainWindow):
 
         file_item = self._delete_queue.pop(0)
         self._delete_worker = DeleteWorker(self._delete_provider, file_item.path)
+        self._active_workers.append(self._delete_worker)
         self._delete_worker.finished.connect(self._on_delete_finished)
         self._delete_worker.error.connect(self._on_delete_error)
         self._delete_worker.start()
 
     def _on_delete_finished(self, success: bool, path: str, file_size: int) -> None:
         """Обработка успешного удаления одного файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         if success:
             self._delete_success += 1
             if file_size > 0:
@@ -1211,6 +1525,9 @@ class MainWindow(QMainWindow):
 
     def _on_delete_error(self, error: str, path: str) -> None:
         """Ошибка удаления файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         print(f"[ERROR] Delete failed for {path}: {error}")
         self._delete_next()
 
@@ -1240,6 +1557,9 @@ class MainWindow(QMainWindow):
 
     def _on_search_finished(self, results: list) -> None:
         """Обработка завершения поиска."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         self.progress_bar.setVisible(False)
         self.address_bar.search_btn.setEnabled(True)
 
@@ -1249,7 +1569,7 @@ class MainWindow(QMainWindow):
             self._pre_search_path = self._current_path
 
             is_cloud = (self._current_provider == self._providers.get('cloud'))
-            self.file_table.set_files(results, self._current_provider, is_cloud)
+            self.file_table.set_files(results, self._current_provider, is_cloud, path=self._current_path)
             self.items_label.setText(f"Найдено: {len(results)}")
             self.status_bar.showMessage(f"Найдено {len(results)} элементов")
             self.address_bar.set_path(f"Результаты поиска ({len(results)})")
@@ -1261,6 +1581,9 @@ class MainWindow(QMainWindow):
 
     def _on_search_error(self, error: str) -> None:
         """Обработка ошибки поиска."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
         self.progress_bar.setVisible(False)
         self.address_bar.search_btn.setEnabled(True)
         self.status_bar.showMessage(f" Ошибка поиска: {error}")
@@ -1268,7 +1591,6 @@ class MainWindow(QMainWindow):
 
     def _on_login(self) -> None:
         """Вход в Яндекс.Диск."""
-        from gui.dialogs.login_dialog import LoginDialog
 
         dialog = LoginDialog(self)
         if dialog.exec():
@@ -1549,7 +1871,7 @@ class MainWindow(QMainWindow):
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "CloudManager")
+        settings = QSettings("TeamTyler", "DiscoHack")
         settings.sync()
         return settings.value("show_notifications", True, type=bool)
 
@@ -1564,24 +1886,11 @@ class MainWindow(QMainWindow):
             msg,
             "Открыть папку в облаке",
             callback=lambda: self._navigate_to_provider('cloud', dest_path),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
 
-    def _notify_download_complete(self):
-        """Уведомление о завершении скачивания."""
-        if not self._can_show_notifications():
-            return
-        msg = f"Скачано {self._download_success} из {self._download_total} файлов"
-        downloads_path = str(self._cloud_provider._bridge.downloads_path) if self._cloud_provider else ""
-        toast = ToastNotification(
-            "Скачивание завершено",
-            msg,
-            "Открыть папку Downloads",
-            callback=lambda: self._navigate_to_provider('local', downloads_path),
-            parent=self
-        )
-        toast.show_at_bottom_right()
 
     def _on_file_rename(self, file_item, new_name: str) -> None:
         """Переименование файла/папки."""
@@ -1614,15 +1923,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", f"Не удалось переименовать: {e}")
 
     def _on_copy_files(self, items: list) -> None:
-        """Копирование файлов (сохраняем в буфер)."""
+        """Копирование файлов (сохраняем элементы и текущего провайдера)."""
         print(f"DEBUG: _on_copy_files получил {len(items)} элементов")
         self._clipboard = items
+        self._clipboard_source_provider = self._current_provider  # запоминаем, откуда скопировано
         for item in items:
             print(f"  - {item.name}")
         self.status_bar.showMessage(f"Скопировано {len(items)} элементов")
 
     def _on_paste_files(self) -> None:
-        """Вставка скопированных файлов."""
+        """Асинхронная вставка скопированных файлов."""
         if not self._clipboard:
             QMessageBox.information(self, "Инфо", "Нет скопированных файлов")
             return
@@ -1632,58 +1942,125 @@ class MainWindow(QMainWindow):
             return
 
         dest_path = self._current_path
+        source_provider = getattr(self, '_clipboard_source_provider', None)
 
-        progress = ProgressDialog("Копирование файлов", self)
-        progress.set_cancellable(False)
-        progress.show()
-
-        success_count = 0
-        for i, item in enumerate(self._clipboard):
-            src_path = item.path
+        # Формируем очередь копирования
+        self._copy_queue.clear()
+        for item in self._clipboard:
+            # Нормализуем исходный путь
+            src_path = item.path.replace('\\', '/')
+            # Если источник облачный (нет метода get_mounts_root), то путь должен начинаться с '/'
+            if source_provider and not hasattr(source_provider, 'get_mounts_root'):
+                if not src_path.startswith('/'):
+                    src_path = '/' + src_path.lstrip('/')
+            # Для локального источника оставляем как есть (Windows/Linux)
             name = Path(src_path).name
             dest = f"{dest_path.rstrip('/')}/{name}"
+            self._copy_queue.append((source_provider, src_path, dest, name))
 
-            progress.set_status(f"Копирование: {name}", f"{i + 1} из {len(self._clipboard)}")
+        self._copy_success = 0
+        self._copy_total = len(self._copy_queue)
+        self._copy_source_provider = source_provider
+        self._copy_dest_provider = self._current_provider
 
+        self._operation_in_progress = True
+        self._copy_next()
+
+    def _copy_next(self):
+        """Обрабатывает следующий элемент в очереди копирования."""
+        if not self._copy_queue:
+            self._operation_in_progress = False
+            self.status_bar.showMessage(f"Скопировано {self._copy_success} из {self._copy_total} файлов")
+            self._on_refresh()
+            return
+
+        src_provider, src_path, dest_path, name = self._copy_queue.pop(0)
+        self.status_bar.showMessage(f"Копирование: {name} ({self._copy_success + 1} из {self._copy_total})")
+
+        # Определяем, является ли источник облачным (отсутствует метод get_mounts_root)
+        is_cloud_source = src_provider and not hasattr(src_provider, 'get_mounts_root')
+
+        if is_cloud_source:
+            # Для облачного источника – сначала скачиваем во временный файл
+            import tempfile
+            self._copy_temp_file = tempfile.NamedTemporaryFile(delete=False)
+            self._copy_temp_path = self._copy_temp_file.name
+            self._copy_temp_file.close()
+
+            self._copy_dest_path = dest_path
+            self._copy_dest_name = name
+            self._download_worker = DownloadWorker(src_provider, src_path, self._copy_temp_path)
+            self._active_workers.append(self._download_worker)
+            self._download_worker.finished.connect(self._on_copy_download_finished)
+            self._download_worker.error.connect(self._on_copy_error)
+            self._download_worker.start()
+        else:
+            # Локальный источник – используем исходный путь напрямую
+            self._copy_temp_path = src_path  # путь к локальному файлу
+            self._copy_is_temp = False  # временный файл не создавался
+            self._start_upload(dest_path, name)
+
+
+    def _on_copy_download_finished(self, success, local_path, remote_path):
+        """Обработка завершения скачивания временного файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        if success:
+            # Используем ранее сохранённые путь и имя
+            self._start_upload(self._copy_dest_path, self._copy_dest_name)
+        else:
+            self._on_copy_error("Ошибка скачивания временного файла")
+
+    def _start_upload(self, dest_path, name):
+        """Запускает загрузку файла (копирование) в целевое место."""
+        self._upload_worker = UploadWorker(
+            self._copy_dest_provider,
+            Path(self._copy_temp_path),
+            dest_path
+        )
+        self._active_workers.append(self._upload_worker)
+        self._upload_worker.finished.connect(self._on_copy_upload_finished)
+        self._upload_worker.error.connect(self._on_copy_error)
+        self._upload_worker.start()
+
+    def _on_copy_upload_finished(self, success, remote_path):
+        """Завершена загрузка после копирования."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        if success:
+            self._copy_success += 1
+
+        # Удаляем временный файл, только если он был создан (облачной источник)
+        if getattr(self, '_copy_is_temp', True) and hasattr(self, '_copy_temp_path'):
+            if os.path.exists(self._copy_temp_path):
+                try:
+                    os.unlink(self._copy_temp_path)
+                except OSError:
+                    pass
+
+        self._copy_next()
+
+    def _on_copy_error(self, error_msg):
+        """Ошибка при копировании."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        print(f"[ERROR] Copy failed: {error_msg}")
+        # Удаляем временный файл при ошибке
+        if hasattr(self, '_copy_temp_path') and os.path.exists(self._copy_temp_path):
             try:
-                # Пытаемся использовать copy_file если есть
-                if hasattr(self._current_provider, 'copy_file'):
-                    self._current_provider.copy_file(src_path, dest)
-                else:
-                    # Fallback: download + upload
-                    import tempfile
-                    with tempfile.NamedTemporaryFile(delete=False) as tmp:
-                        self._current_provider.download_file(src_path, tmp.name)
-                        self._current_provider.upload_file(tmp.name, dest)
-                success_count += 1
-            except Exception as e:
-                print(f"Ошибка копирования {name}: {e}")
-                QMessageBox.warning(self, "Ошибка", f"Не удалось скопировать {name}: {e}")
-
-        progress.operation_finished(True)
-        self.status_bar.showMessage(f"Скопировано {success_count} из {len(self._clipboard)} файлов")
-        self._on_refresh()
+                os.unlink(self._copy_temp_path)
+            except OSError:
+                pass
+        self._copy_next()
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "CloudManager")
+        settings = QSettings("TeamTyler", "DiscoHack")
         settings.sync()
         return settings.value("show_notifications", True, type=bool)
-
-    def _notify_upload_complete(self):
-        """Уведомление о завершении загрузки на диск."""
-        if not self._can_show_notifications():
-            return
-        msg = f"Загружено {self._upload_success} из {self._upload_total} файлов"
-        dest_path = getattr(self, '_upload_dest_path', '/')
-        toast = ToastNotification(
-            "Загрузка завершена",
-            msg,
-            "Открыть папку в облаке",
-            callback=lambda: self._navigate_to_provider('cloud', dest_path),
-            parent=self
-        )
-        toast.show_at_bottom_right()
 
     def _notify_download_complete(self):
         """Уведомление о завершении скачивания."""
@@ -1696,7 +2073,8 @@ class MainWindow(QMainWindow):
             msg,
             "Открыть папку Downloads",
             callback=lambda: self._navigate_to_provider('local', downloads_path),
-            parent=self
+            parent=self,
+            duration=self._toast_duration
         )
         toast.show_at_bottom_right()
     def _is_local_provider(self) -> bool:

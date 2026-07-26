@@ -22,6 +22,6 @@ class DeleteWorker(QThread):
         """Выполнение удаления."""
         try:
             success = self.provider.delete_file(self.remote_path)
-            self.finished.emit(success, self.remote_path)
+            self.finished.emit(success, self.remote_path, self.file_size)
         except Exception as e:
             self.error.emit(str(e), self.remote_path)

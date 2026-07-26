@@ -26,6 +26,10 @@ class LocalFileSystemProvider(BaseCloudProvider):
         self._current_path = str(Path.home())
         self._mounts_cache = None
         self._mounts_cache_time = 0
+        self._show_hidden = False
+
+    def set_show_hidden(self, show: bool):
+        self._show_hidden = show
 
     def refresh(self) -> None:
         """Принудительное обновление кэша."""
@@ -54,6 +58,9 @@ class LocalFileSystemProvider(BaseCloudProvider):
         items = []
         try:
             for entry in p.iterdir():
+                if not self._show_hidden and entry.name.startswith('.'):
+                    continue
+
                 stat = entry.stat()
 
                 # Определяем MIME-тип

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Set
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from core.cache_manager import FolderCache
 
 
 class CloudSyncHandler(FileSystemEventHandler):
@@ -44,7 +45,7 @@ class CloudSyncHandler(FileSystemEventHandler):
                     return
                 self._pending_uploads.add(remote_path)
 
-            print(f"[SYNC] Uploading: {file_path.name}")
+            # print(f"[SYNC] Uploading: {file_path.name}")
             self.cloud_bridge.upload_file(file_path, remote_path)
 
             with self._lock:
@@ -69,7 +70,8 @@ class CloudSyncHandler(FileSystemEventHandler):
 class SyncWatcher:
     """Наблюдатель за изменениями и синхронизацией."""
 
-    def __init__(self, cloud_bridge, local_path: Path, refresh_callback=None):
+    def __init__(self, cloud_bridge, local_path: Path, refresh_callback=None,
+                 hash_update_callback=None):
         self.cloud_bridge = cloud_bridge
         self.local_path = local_path
         self.refresh_callback = refresh_callback
@@ -78,26 +80,31 @@ class SyncWatcher:
         self.running = False
         self.cloud_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self.check_interval = 30
+        self.hash_update_callback = hash_update_callback
+
+    def set_interval(self, seconds: int):
+        """Изменить интервал проверки облака."""
+        self.check_interval = seconds
 
     def _check_cloud_loop(self):
-        """Фоновый цикл проверки облака."""
         while not self._stop_event.is_set():
-            time.sleep(30)
-
+            time.sleep(self.check_interval)
             if not self.cloud_bridge.has_token():
                 continue
-
             try:
                 result = self.cloud_bridge.sync_cloud_to_local("/")
-                if result.get('new'):
-                    print(f"[SYNC] New files: {result['new']}")
-                if result.get('updated'):
-                    print(f"[SYNC] Updated files: {result['updated']}")
+                # if result.get('new'):
+                #     print(f"[SYNC] New files: {result['new']}")
+                # if result.get('updated'):
+                #     print(f"[SYNC] Updated files: {result['updated']}")
 
                 # Если есть изменения - вызываем callback для обновления GUI
                 if (result.get('new') or result.get('updated')) and self.refresh_callback:
                     self.refresh_callback()
-
+                    # Запускаем фоновое обновление хешей, если callback задан
+                    if self.hash_update_callback:
+                        self.hash_update_callback()
             except Exception as e:
                 print(f"[SYNC] Cloud check error: {e}")
                 time.sleep(10)
@@ -134,3 +141,38 @@ class SyncWatcher:
     def is_running(self) -> bool:
         """Проверка статуса."""
         return self.running
+
+    def _preload_subfolders(self):
+        """Фоновая предзагрузка кеша для подпапок облака."""
+        if not self.cloud_bridge.has_token():
+            return
+        cache = FolderCache()
+        try:
+            root_items = self.cloud_bridge.provider.list_files("/")
+            folders = [item for item in root_items if item.is_dir]
+            for folder in folders:
+                sub_items = self.cloud_bridge.provider.list_files(folder.path)
+                cache.save(folder.path, 'cloud', sub_items)
+                print(f"[SYNC] Preloaded {len(sub_items)} items into cache for {folder.path}")
+        except Exception as e:
+            print(f"[SYNC] Preload error: {e}")
+
+    def _check_cloud_loop(self):
+        """Фоновый цикл проверки облака."""
+        last_preload = 0
+        while not self._stop_event.is_set():
+            time.sleep(self.check_interval)
+            if not self.cloud_bridge.has_token():
+                continue
+            try:
+                # Обычная синхронизация
+                result = self.cloud_bridge.sync_cloud_to_local("/")
+                # ... обработка ...
+
+                # Раз в 5 минут предзагружаем подпапки
+                now = time.time()
+                if now - last_preload > 300:
+                    self._preload_subfolders()
+                    last_preload = now
+            except Exception as e:
+                print(f"[SYNC] Cloud check error: {e}")
