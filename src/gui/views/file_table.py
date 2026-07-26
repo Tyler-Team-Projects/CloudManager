@@ -620,32 +620,25 @@ class FileTableView(QWidget):
 
     def _start_drag(self, items: List[CloudFile]) -> None:
         """Начинает перетаскивание файлов из приложения в ОС."""
-        print(f"DEBUG: _start_drag called with {len(items)} items")
         urls = []
         for item in items:
             if item.is_dir:
-                print(f"DEBUG: skipping directory {item.name}")
                 continue
 
             local_path = self._get_local_path(item)
-            print(f"DEBUG: {item.name} -> local_path = {local_path}")
             if local_path and local_path.exists():
                 urls.append(QUrl.fromLocalFile(str(local_path)))
-                print(f"DEBUG: added {local_path} to urls")
             else:
                 print(f"DEBUG: file {item.name} not found locally")
 
         if not urls:
-            print("DEBUG: No urls to drag!")
             return
 
-        print(f"DEBUG: Creating drag with {len(urls)} urls")
         mime_data = QMimeData()
         mime_data.setUrls(urls)
         drag = QDrag(self)
         drag.setMimeData(mime_data)
         result = drag.exec(Qt.DropAction.CopyAction)
-        print(f"DEBUG: drag result = {result}")
 
     def eventFilter(self, obj, event):
         """Фильтр событий для перехвата мышиных событий в viewport дочерних виджетов."""
@@ -683,7 +676,7 @@ class FileTableView(QWidget):
                 if event.buttons() & Qt.MouseButton.LeftButton:
                     if self._drag_start_pos:
                         current_global_pos = event.globalPosition().toPoint()
-                        if (current_global_pos - self._drag_start_pos).manhattanLength() >= 10:
+                        if (current_global_pos - self._drag_start_pos).manhattanLength() >= 5:
                             items = self.get_selected_items()
                             if items:
                                 can_drag = any(not item.is_dir for item in items)
