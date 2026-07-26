@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Optional, Set
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+from core.cache_manager import FolderCache
 
 
 class CloudSyncHandler(FileSystemEventHandler):
@@ -140,3 +141,38 @@ class SyncWatcher:
     def is_running(self) -> bool:
         """Проверка статуса."""
         return self.running
+
+    def _preload_subfolders(self):
+        """Фоновая предзагрузка кеша для подпапок облака."""
+        if not self.cloud_bridge.has_token():
+            return
+        cache = FolderCache()
+        try:
+            root_items = self.cloud_bridge.provider.list_files("/")
+            folders = [item for item in root_items if item.is_dir]
+            for folder in folders:
+                sub_items = self.cloud_bridge.provider.list_files(folder.path)
+                cache.save(folder.path, 'cloud', sub_items)
+                print(f"[SYNC] Preloaded {len(sub_items)} items into cache for {folder.path}")
+        except Exception as e:
+            print(f"[SYNC] Preload error: {e}")
+
+    def _check_cloud_loop(self):
+        """Фоновый цикл проверки облака."""
+        last_preload = 0
+        while not self._stop_event.is_set():
+            time.sleep(self.check_interval)
+            if not self.cloud_bridge.has_token():
+                continue
+            try:
+                # Обычная синхронизация
+                result = self.cloud_bridge.sync_cloud_to_local("/")
+                # ... обработка ...
+
+                # Раз в 5 минут предзагружаем подпапки
+                now = time.time()
+                if now - last_preload > 300:
+                    self._preload_subfolders()
+                    last_preload = now
+            except Exception as e:
+                print(f"[SYNC] Cloud check error: {e}")

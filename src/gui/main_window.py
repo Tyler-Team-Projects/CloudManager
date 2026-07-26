@@ -587,9 +587,13 @@ class MainWindow(QMainWindow):
 
         # 1. Загрузка кеша
         cached_files = self._folder_cache.load(path, provider_type)
+
         if cached_files is not None:
             self._on_directory_loaded(cached_files, from_cache=True)
-            # Если локальная папка не изменилась — выходим
+
+        if cached_files is not None:
+            self._on_directory_loaded(cached_files, from_cache=True)
+            # Если локальная папка не изменилась — выходим без воркера
             if provider_type == 'local' and not force_refresh:
                 try:
                     if abs(os.path.getmtime(path) - self._folder_cache.get_mtime(path)) < 1:
@@ -607,12 +611,7 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Загрузка {path}...")
 
         if self._list_worker and self._list_worker.isRunning():
-            if provider_type == 'cloud':
-                self._list_worker.requestInterruption()
-                self._list_worker.wait(2000)
-            else:
-                # Для локального – просто отменяем без ожидания
-                self._list_worker.requestInterruption()
+            self._list_worker.requestInterruption()
 
         self._list_worker = ListDirectoryWorker(self._current_provider, path)
         self._list_worker.path = path
@@ -623,6 +622,8 @@ class MainWindow(QMainWindow):
                 return
             provider_type = 'local' if hasattr(self._current_provider, 'get_mounts_root') else 'cloud'
             self._folder_cache.save(path, provider_type, files)
+
+            #print(f"[CACHE] Saved to cache: {len(files)} items for {path}")
 
             if provider_type == 'cloud' and files:
                 # Остановить предыдущий воркер, если ещё работает
@@ -638,8 +639,11 @@ class MainWindow(QMainWindow):
                     )
                     self._hash_worker.start()
 
+
+
             if cached_files is None or not self._files_are_equal(cached_files, files):
                 self._on_directory_loaded(files, from_cache=False)
+
             else:
                 self.status_bar.showMessage("Готово")
 
@@ -684,19 +688,11 @@ class MainWindow(QMainWindow):
                         local_file = downloads_path / file_item.name
                         file_item.is_downloaded = local_file.exists()
                         if file_item.is_downloaded:
-                            # Кеш хешей
                             cached = self._folder_cache.get_hashes(file_item.path)
-                            remote_hash = cached.get('remote_hash')
-                            local_hash = cached.get('local_hash')
-                            if remote_hash is None and not from_cache:
-                                # fresh data – можно запросить хеш сейчас
-                                sync_info = bridge.check_file_sync(file_item.path)
-                                remote_hash = sync_info.get('remote_hash')
-                                local_hash = sync_info.get('local_hash')
-                                self._folder_cache.save_hashes(file_item.path, remote_hash, local_hash)
-                            file_item.is_synced = (remote_hash and local_hash and remote_hash == local_hash)
-                        else:
-                            file_item.is_synced = False
+                            if cached:
+                                file_item.is_synced = (cached.get('remote_hash') == cached.get('local_hash'))
+                            else:
+                                file_item.is_synced = False
 
         # Управление виджетами диска
         if self._is_current_cloud:
