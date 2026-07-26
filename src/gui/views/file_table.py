@@ -689,21 +689,16 @@ class FileTableView(QWidget):
         return super().eventFilter(obj, event)
 
     def _get_local_path(self, item: CloudFile) -> Optional[Path]:
-        """
-        Получить локальный путь к файлу.
-        Для локального провайдера — абсолютный путь.
-        Для облачного провайдера — путь в Downloads (если скачан).
-        """
+        """Получить локальный путь к файлу."""
         # Локальный провайдер
         if hasattr(self._current_provider, 'get_mounts_root'):
             if hasattr(self._current_provider, 'get_absolute_path'):
                 abs_path = self._current_provider.get_absolute_path(item.path)
                 return Path(abs_path)
             else:
-                # Fallback: используем имя файла в домашней папке
                 return Path.home() / item.name
 
-        # Облачный провайдер — проверяем, скачан ли файл
+        # Облачный провайдер - проверяем, скачан ли файл
         if self._is_cloud_provider:
             from core.local.cloud_provider_adapter import CloudProviderAdapter
             if isinstance(self._current_provider, CloudProviderAdapter):
