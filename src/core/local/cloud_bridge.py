@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from api.manager import CloudManager
 from api.providers.yadisk.provider import YandexDiskProvider
 from api.common.exceptions import CloudAuthError, CloudNotFoundError
+from core.cache_manager import FolderCache
+
 
 
 class CloudBridge:
@@ -279,6 +281,8 @@ class CloudBridge:
                 'is_synced': remote_hash == local_hash if remote_hash and local_hash else False
             }
             self._save_metadata()
+            cache = FolderCache()
+            cache.save_hashes(remote_path, remote_hash, local_hash)
 
             print(f"\nСкачано: {local_path}")
             if remote_hash and local_hash:
@@ -552,7 +556,7 @@ class CloudBridge:
             return False
 
     def sync_cloud_to_local(self, remote_path: str = "/") -> dict:
-        """Проверить изменения в облаке (без скачивания)."""
+        """Проверить изменения в облаке относительно папки загрузок, включая хеши."""
         result = {'new': [], 'updated': [], 'deleted': []}
 
         if not self.has_token():
@@ -562,35 +566,32 @@ class CloudBridge:
             remote_items = self.provider.list_files(remote_path)
             remote_files = {item.path: item for item in remote_items if not item.is_dir}
 
-            # Проверяем новые и изменённые
-            for path, item in remote_files.items():
-                local_file = self.local_path / path.lstrip('/')
-
-                if 'Downloads' in local_file.parts:
-                    continue
+            for path, remote_item in remote_files.items():
+                local_file = self.downloads_path / remote_item.name
 
                 if not local_file.exists():
-                    result['new'].append(item.name)
+                    result['new'].append(remote_item.name)
                 else:
                     local_size = local_file.stat().st_size
-                    if local_size != item.size:
-                        result['updated'].append(item.name)
+                    if local_size != remote_item.size:
+                        result['updated'].append(remote_item.name)
+                    else:
+                        # Сравниваем хеши через кеш (быстро)
+                        sync_info = self.check_file_sync(remote_item.path)
+                        if not sync_info.get('is_synced', False):
+                            result['updated'].append(remote_item.name)
 
             return result
         except Exception as e:
             print(f"[SYNC] Cloud check error: {e}")
             return result
 
-    def start_sync(self, refresh_callback=None) -> None:
-        """Запуск фоновой синхронизации."""
+    def start_sync(self, refresh_callback=None, hash_update_callback=None) -> None:
         if not self.has_token():
             return
-
         from .cloud.syns_watcher import SyncWatcher
-
         if self._sync_watcher is None:
-            self._sync_watcher = SyncWatcher(self, self.local_path, refresh_callback)
-
+            self._sync_watcher = SyncWatcher(self, self.local_path, refresh_callback, hash_update_callback)
         if not self._sync_watcher.is_running():
             self._sync_watcher.start_background()
             print("[SYNC] Фоновая синхронизация запущена")
