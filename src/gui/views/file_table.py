@@ -221,6 +221,7 @@ class FileTableView(QWidget):
     new_folder_requested = pyqtSignal()
     public_link_requested = pyqtSignal(str)
     files_dropped = pyqtSignal(list)
+    save_as_requested = pyqtSignal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -343,6 +344,9 @@ class FileTableView(QWidget):
         self.download_action = QAction(QIcon.fromTheme("document-save"), "Скачать", self)
         self.download_action.triggered.connect(self._on_download)
 
+        self.save_as_action = QAction(QIcon.fromTheme("document-save-as"), "Сохранить как...", self)
+        self.save_as_action.triggered.connect(self._on_save_as)
+
         self.sync_action = QAction(QIcon.fromTheme("view-refresh"), "Проверить синхронизацию", self)
         self.sync_action.triggered.connect(self._on_check_sync)
 
@@ -370,6 +374,7 @@ class FileTableView(QWidget):
         self.delete_action.triggered.connect(self._on_delete)
 
         self.context_menu.addAction(self.download_action)
+        self.context_menu.addAction(self.save_as_action)
         self.context_menu.addAction(self.sync_action)
         self.context_menu.addAction(self.update_action)
         self.context_menu.addAction(self.public_link_action)
@@ -639,8 +644,11 @@ class FileTableView(QWidget):
             self.sync_action.setEnabled(False)
             self.update_action.setEnabled(False)
         else:
-            self.download_action.setEnabled(has_selection)
+            has_files = any(not item.is_dir for item in items)
+            self.download_action.setEnabled(has_selection and has_files)
             self.download_action.setVisible(has_selection)
+            self.save_as_action.setEnabled(has_selection and has_files)
+            self.save_as_action.setVisible(has_selection)
             self.sync_action.setEnabled(has_selection and has_downloaded)
             self.sync_action.setVisible(has_selection)
             self.update_action.setEnabled(has_selection and has_outdated)
@@ -668,6 +676,14 @@ class FileTableView(QWidget):
         items = self.get_selected_items()
         if len(items) == 1:
             self.public_link_requested.emit(items[0].path)
+
+    def _on_save_as(self):
+        """Обработчик для сохранить как """
+        items = self.get_selected_items()
+        # Фильтруем только файлы (не папки)
+        files_to_save = [item for item in items if not item.is_dir]
+        if files_to_save:
+            self.save_as_requested.emit(files_to_save)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """Проверяем, что перетаскивают именно локальные файлы."""

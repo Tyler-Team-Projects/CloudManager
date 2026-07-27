@@ -87,6 +87,11 @@ class MainWindow(QMainWindow):
         self._update_provider = None
         self._update_worker = None
 
+        self._save_as_queue = []
+        self._save_as_success = 0
+        self._save_as_total = 0
+        self._save_as_path = None
+
         self._init_providers()
         self._setup_ui()
         self._setup_menu()
@@ -558,6 +563,7 @@ class MainWindow(QMainWindow):
         self.file_table.new_folder_requested.connect(self._on_new_folder)
         self.file_table.public_link_requested.connect(self._on_public_link)
         self.file_table.files_dropped.connect(self.upload_files)
+        self.file_table.save_as_requested.connect(self._on_save_as)
 
     def _load_stylesheet(self) -> None:
         """Загрузка стилей."""
@@ -748,6 +754,192 @@ class MainWindow(QMainWindow):
 
         dlg = PublicLinkDialog(url, delete_callback, self)
         dlg.exec()
+
+    def _on_save_as(self, items: List[CloudFile]) -> None:
+        """Обработка сохранить как"""
+        if not items:
+            return
+
+        if self._is_local_provider() or self._current_path == "mounts://":
+            QMessageBox.warning(self, "Ошибка", "Функция доступна только для файлов на Яндекс.Диске")
+            return
+
+        cloud_provider = self._providers.get('cloud')
+        if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
+            QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
+            return
+
+        if not cloud_provider.has_token():
+            QMessageBox.warning(self, "Ошибка", "Необходимо авторизоваться в Яндекс.Диске")
+            return
+
+        # Открываем диалог выбора папки
+        save_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Выберите папку для сохранения",
+            str(Path.home())
+        )
+
+        if not save_dir:
+            return
+
+        save_path = Path(save_dir)
+        if not save_path.exists():
+            QMessageBox.warning(self, "Ошибка", f"Папка {save_dir} не существует")
+            return
+
+        files_to_save = [item for item in items if not item.is_dir]
+        if not files_to_save:
+            QMessageBox.information(self, "Инфо", "Выберите файлы (папки не поддерживаются)")
+            return
+
+        self._save_as_queue = []
+        for item in files_to_save:
+            local_path = save_path / item.name
+            self._save_as_queue.append((item, local_path))
+
+        self._save_as_success = 0
+        self._save_as_total = len(self._save_as_queue)
+        self._save_as_path = save_path
+        self._cloud_provider = cloud_provider
+
+        self._operation_in_progress = True
+        self.status_bar.showMessage(f"Сохранение 0 из {self._save_as_total}...")
+        self._save_as_next()
+
+    def _save_as_next(self) -> None:
+        """Скачивание следующего файла для сохранить как"""
+        if not self._save_as_queue:
+            self._operation_in_progress = False
+            if self._save_as_success > 0:
+                self.status_bar.showMessage(
+                    f"Сохранено {self._save_as_success} из {self._save_as_total} файлов в {self._save_as_path}"
+                )
+                self._notify_save_as_complete()
+            else:
+                self.status_bar.showMessage(
+                    f"Сохранение прервано. 0 из {self._save_as_total} файлов"
+                )
+            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
+            return
+
+        file_item, local_path = self._save_as_queue.pop(0)
+        current = self._save_as_success + 1
+
+        self.status_bar.showMessage(
+            f"Сохранение: {file_item.name} ({current} из {self._save_as_total})"
+        )
+
+        # Проверяем, существует ли файл
+        if local_path.exists():
+            reply = QMessageBox.question(
+                self,
+                "Файл существует",
+                f"Файл {file_item.name} уже существует в папке {self._save_as_path}.\n"
+                "Перезаписать?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.No:
+                self._save_as_success += 1
+                self._save_as_next()
+                return
+
+        self._download_worker = DownloadWorker(
+            self._cloud_provider,
+            file_item.path,
+            str(local_path),
+            file_item.size
+        )
+        self._active_workers.append(self._download_worker)
+        self._download_worker.progress.connect(self._on_save_as_progress)
+        self._download_worker.finished.connect(self._on_save_as_finished)
+        self._download_worker.error.connect(self._on_save_as_error)
+        self._download_worker.start()
+
+    def _on_save_as_progress(self, current: int, total: int) -> None:
+        """Обновление прогресса сохранения."""
+        if total > 0:
+            current_mb = current / (1024 * 1024)
+            total_mb = total / (1024 * 1024)
+            percent = int(current / total * 100)
+            file_name = self._save_as_queue[0][0].name if self._save_as_queue else ""
+            self.status_bar.showMessage(
+                f"Сохранение: {file_name} - {current_mb:.1f}/{total_mb:.1f} МБ ({percent}%)"
+            )
+        else:
+            current_mb = current / (1024 * 1024)
+            file_name = self._save_as_queue[0][0].name if self._save_as_queue else ""
+            self.status_bar.showMessage(f"Сохранение: {file_name} - {current_mb:.1f} МБ")
+
+    def _on_save_as_finished(self, success: bool, local_path: str, remote_path: str) -> None:
+        """Завершение сохранения одного файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        if success:
+            self._save_as_success += 1
+            # Сохраняем метаданные
+            if os.path.exists(local_path):
+                cloud_provider = self._providers.get('cloud')
+                if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                    bridge = cloud_provider._bridge
+                    bridge.download_metadata[local_path] = {
+                        'remote_path': remote_path,
+                        'downloaded_at': datetime.now().isoformat(),
+                        'size': os.path.getsize(local_path),
+                        'name': Path(local_path).name,
+                        'remote_hash': None,
+                        'local_hash': None,
+                        'is_synced': False
+                    }
+                    bridge._save_metadata()
+        self._save_as_next()
+
+    def _on_save_as_error(self, error: str) -> None:
+        """Ошибка сохранения файла."""
+        worker = self.sender()
+        if worker in self._active_workers:
+            self._active_workers.remove(worker)
+        if self._save_as_queue:
+            failed_item, _ = self._save_as_queue.pop(0)
+            file_name = failed_item.name
+        else:
+            file_name = "Неизвестный файл"
+
+        print(f"[ERROR] Save As failed for {file_name}: {error}")
+        self._notify_save_as_failed(file_name, error)
+        self._save_as_next()
+
+    def _notify_save_as_complete(self):
+        """Уведомление о завершении сохранения."""
+        if not self._can_show_notifications():
+            return
+        msg = f"Сохранено {self._save_as_success} из {self._save_as_total} файлов"
+        save_path = str(self._save_as_path) if self._save_as_path else ""
+        toast = ToastNotification(
+            "Сохранение завершено",
+            msg,
+            "Открыть папку",
+            callback=lambda: self._navigate_to_provider('local', save_path),
+            parent=self,
+            duration=self._toast_duration
+        )
+        toast.show_at_bottom_right()
+
+    def _notify_save_as_failed(self, file_name: str, error_msg: str):
+        """Уведомление о неудачном сохранении."""
+        if not self._can_show_notifications():
+            return
+        toast = ToastNotification(
+            "Ошибка сохранения",
+            f"Не удалось сохранить файл {file_name}\n"
+            f"Ошибка: {error_msg}",
+            "Закрыть",
+            callback=None,
+            parent=self,
+            duration=self._toast_duration
+        )
+        toast.show_at_bottom_right()
 
     def _update_toolbar_buttons(self) -> None:
         """Обновление состояния кнопок тулбара."""
