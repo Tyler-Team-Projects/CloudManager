@@ -395,9 +395,9 @@ class FileTableView(QWidget):
         for item in self._current_items:
             self._add_icon_item(item)
 
-    def _update_icon_view_incremental(self, new_items: List[CloudFile]) -> None:
+    def _update_icon_view_incremental(self, new_items: List[CloudFile], old_items_list: List[CloudFile]) -> None:
         """Частичное обновление иконок – только изменившиеся элементы."""
-        old_items = {item.path: item for item in self._current_items}
+        old_items = {item.path: item for item in old_items_list}
         new_paths = {item.path for item in new_items}
 
         # Удаляем исчезнувшие элементы (с конца к началу)
@@ -497,6 +497,8 @@ class FileTableView(QWidget):
     def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False,
                   path: str = None) -> None:
         self._current_provider = provider
+
+        old_items_for_icons = self._current_items
         self._current_items = files
         provider_changed = (self._is_cloud_provider != is_cloud)
         self._is_cloud_provider = is_cloud
@@ -516,12 +518,11 @@ class FileTableView(QWidget):
         self._update_status_column_visibility()
 
         if self._view_mode == "icons":
-            # Полная перерисовка при первом показе, смене провайдера или смене папки
             if not self._icon_view_initialized or provider_changed or path_changed:
                 self._update_icon_view()
                 self._icon_view_initialized = True
             else:
-                self._update_icon_view_incremental(files)
+                self._update_icon_view_incremental(files, old_items_for_icons)
 
     def _update_status_column_visibility(self) -> None:
         self.table_view.setColumnHidden(2, not self._is_cloud_provider)
@@ -540,6 +541,19 @@ class FileTableView(QWidget):
                 if item:
                     items.append(item)
         return items
+
+    def add_file(self, file_item: CloudFile) -> None:
+        """Мгновенно добавляет один файл в таблицу и иконки (для облачной загрузки)."""
+        # Добавляем в модель таблицы
+        self.table_model._append_item(file_item)
+        # Если активна сортировка, пересортируем
+        if self.sort_proxy.sortColumn() >= 0:
+            self.sort_proxy.sort(self.sort_proxy.sortColumn(), self.sort_proxy.sortOrder())
+        # Добавляем иконку, если режим иконок
+        if self._view_mode == "icons":
+            self._add_icon_item(file_item)
+        # Обновляем внутренний список
+        self._current_items.append(file_item)
 
     def _source_index(self, index: QModelIndex) -> QModelIndex:
         model = self.table_view.model()
