@@ -641,7 +641,7 @@ class FileTableView(QWidget):
         result = drag.exec(Qt.DropAction.CopyAction)
 
     def eventFilter(self, obj, event):
-        """Фильтр событий для перехвата мышиных событий в viewport дочерних виджетов."""
+        """Фильтр событий для перехвата событий от мышки."""
 
         # Определяем, какому виджету принадлежит этот viewport
         current_view = None
@@ -661,12 +661,10 @@ class FileTableView(QWidget):
                     local_pos = event.pos()
                     if current_view == self.icon_view:
                         item = current_view.itemAt(local_pos)
-                        if item:
-                            self._drag_start_index = item
+                        self._drag_start_index = item if item else None
                     else:
                         index = current_view.indexAt(local_pos)
-                        if index.isValid():
-                            self._drag_start_index = index
+                        self._drag_start_index = index if index.isValid() else None
 
                     # Возвращаем False, чтобы виджет выделил элемент
                     return False
@@ -677,14 +675,28 @@ class FileTableView(QWidget):
                     if self._drag_start_pos:
                         current_global_pos = event.globalPosition().toPoint()
                         if (current_global_pos - self._drag_start_pos).manhattanLength() >= 5:
-                            items = self.get_selected_items()
-                            if items:
-                                can_drag = any(not item.is_dir for item in items)
-                                if can_drag:
-                                    self._drag_start_pos = None
-                                    self._start_drag(items)
-                                    return True
-                    return False
+                            # Проверяем, что кликнули на элемент, а не на пустое место
+                            if self._drag_start_index is not None:
+                                items = self.get_selected_items()
+                                if items:
+                                    can_drag = any(not item.is_dir for item in items)
+                                    if can_drag:
+                                        self._drag_start_pos = None
+                                        self._drag_start_index = None
+                                        self._start_drag(items)
+                                        return True
+                        return False
+                else:
+                    # Если кнопка мыши не нажата, сбрасываем позицию
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
+
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
 
         return super().eventFilter(obj, event)
 
