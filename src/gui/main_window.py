@@ -502,12 +502,21 @@ class MainWindow(QMainWindow):
                 bridge.stop_sync()
             if bridge._sync_watcher:
                 bridge._sync_watcher.set_interval(sync_interval)
-        cloud_provider._bridge._sync_watcher.hash_update_callback = self._start_hash_update_callback
+
+        self._update_sync_status()
 
         self._update_sync_status()
 
         # Обновляем текущее представление
         directory = self._load_directory(self._current_path)
+
+    def _is_network_available(self) -> bool:
+        try:
+            import requests
+            requests.head('https://cloud-api.yandex.net', timeout=2)
+            return True
+        except Exception:
+            return False
 
     def _toggle_view(self, checked):
         """Переключение между таблицей и иконками."""
@@ -529,7 +538,6 @@ class MainWindow(QMainWindow):
         """Настройка статус-бара."""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Готово")
 
         # Добавить прогресс-бар в статус-бар
         self.progress_bar = QProgressBar()
@@ -616,7 +624,12 @@ class MainWindow(QMainWindow):
         if self._list_worker and self._list_worker.isRunning() and getattr(self._list_worker, 'path', '') == path:
             return
 
-        self.status_bar.showMessage(f"Загрузка {path}...")
+        if provider_type == 'cloud' and not self._is_network_available():
+            self._switch_to_local("Нет подключения – работа с локальными дисками")
+            return
+
+        if not self._is_local_provider():
+            self.status_bar.showMessage(f"Загрузка {path}...")
 
         if self._list_worker and self._list_worker.isRunning():
             self._list_worker.requestInterruption()
@@ -652,8 +665,6 @@ class MainWindow(QMainWindow):
             if cached_files is None or not self._files_are_equal(cached_files, files):
                 self._on_directory_loaded(files, from_cache=False)
 
-            else:
-                self.status_bar.showMessage("Готово")
 
         def on_error(err):
             worker = self.sender()
@@ -665,6 +676,24 @@ class MainWindow(QMainWindow):
         self._list_worker.finished.connect(on_finished)
         self._list_worker.error.connect(on_error)
         self._list_worker.start()
+
+    def _switch_to_local(self, message: str = ""):
+        """Переключиться на локальные диски, если мы ещё не на них."""
+        local_provider = self._providers.get('local')
+        if local_provider and self._current_provider == local_provider:
+            return  # уже на локальных дисках
+        if local_provider:
+            self._current_provider = local_provider
+            self._current_path = local_provider.get_root_path()
+            self._load_directory(self._current_path)
+            self.address_bar.set_path(self._current_path)
+        # Останавливаем синхронизацию и таймер диска
+        cloud_provider = self._providers.get('cloud')
+        if cloud_provider and hasattr(cloud_provider, '_bridge'):
+            cloud_provider._bridge.stop_sync()
+        self._stop_disk_info_timer()
+        if message:
+            self.status_bar.showMessage(message)
 
     def _start_hash_update_callback(self):
         """Запускает фоновое обновление хешей для текущей облачной папки."""
@@ -720,7 +749,7 @@ class MainWindow(QMainWindow):
         self.address_bar.set_path(self._current_path)
         self.items_label.setText(f"Элементов: {len(files)}")
 
-        if from_cache:
+        if from_cache and not self._is_local_provider():
             self.status_bar.showMessage("Загружено из кеша")
         else:
             self.status_bar.showMessage(f"Загружено {len(files)} элементов")
@@ -957,9 +986,13 @@ class MainWindow(QMainWindow):
             self.delete_action.setEnabled(not is_root)
 
     def _on_directory_error(self, error: str) -> None:
-        """Обработка ошибки загрузки."""
-        self.status_bar.showMessage(f"Ошибка: {error}")
-        self.items_label.setText("Элементов: 0")
+        if self._current_provider and hasattr(self._current_provider, 'get_mounts_root'):
+            # Это локальный провайдер, ошибка локальной ФС – просто покажем
+            self.status_bar.showMessage(f"Ошибка: {error}")
+            self.items_label.setText("Элементов: 0")
+        else:
+            # Облачный провайдер – переключаемся на локальные диски
+            self._switch_to_local("Ошибка облака – работа с локальными дисками")
 
     # ============ Обработчики сигналов ============
 
@@ -1055,6 +1088,11 @@ class MainWindow(QMainWindow):
 
     def _finish_upload(self) -> None:
         """Завершение процесса загрузки: обновление таблицы и очистка статус-бара."""
+        # Для облачного провайдера не вызываем _on_refresh, чтобы не перезагружать список
+        # Файлы уже добавлены через add_file, а статус обновится фоновой синхронизацией
+        if not self._is_local_provider():
+            self.status_bar.clearMessage()
+            return
         self._on_refresh()
         self.status_bar.clearMessage()
 
@@ -1108,6 +1146,9 @@ class MainWindow(QMainWindow):
 
     def _on_upload(self) -> None:
         """Асинхронная загрузка файлов на диск через диалоговое окно."""
+        if self._is_current_cloud and not self._is_network_available():
+            QMessageBox.warning(self, "Нет сети", "Нет подключения к интернету")
+            return
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
             return
@@ -1270,6 +1311,17 @@ class MainWindow(QMainWindow):
                     file_size = uploaded_item.stat().st_size
                     self._update_disk_cache_after_operation(file_size, is_upload=True)
                 self._update_disk_info()
+                new_file = CloudFile(
+                    name=uploaded_item.name,
+                    path=remote_path,
+                    is_dir=False,
+                    size=file_size,
+                    modified_at=datetime.fromtimestamp(uploaded_item.stat().st_mtime),
+                    mime_type=None,
+                    file_id=remote_path
+                )
+                self.file_table.add_file(new_file)
+                self.items_label.setText(f"Элементов: {len(self.file_table._current_items)}")
         self._upload_next()
 
     def _on_upload_error(self, error: str) -> None:
@@ -1363,6 +1415,9 @@ class MainWindow(QMainWindow):
 
         if self._is_local_provider():
             QMessageBox.warning(self, "Ошибка", "Скачивание доступно только в облачной папке")
+            return
+        if self._is_current_cloud and not self._is_network_available():
+            QMessageBox.warning(self, "Нет сети", "Нет подключения к интернету")
             return
 
         selected = self.file_table.get_selected_items()
@@ -1729,6 +1784,9 @@ class MainWindow(QMainWindow):
 
     def _open_file(self, file_item: CloudFile) -> None:
         """Открытие файла."""
+        if self._is_current_cloud and not self._is_network_available():
+            QMessageBox.warning(self, "Нет сети", "Нет подключения к интернету")
+            return
         if hasattr(self._current_provider, 'open_file'):
             success = self._current_provider.open_file(file_item.path)
             if not success:
@@ -1829,6 +1887,8 @@ class MainWindow(QMainWindow):
 
     def _update_disk_info(self) -> None:
         """Обновить информацию о занятом месте на Яндекс.Диске."""
+        if self._is_current_cloud and not self._is_network_available():
+            return
         cloud_provider = self._providers.get('cloud')
 
         if not self._is_current_cloud or not cloud_provider:

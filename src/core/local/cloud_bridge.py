@@ -45,6 +45,8 @@ class CloudBridge:
         self._sync_watcher: Optional[SyncWatcher] = None
         self._init_provider()
 
+        self._last_hash_error = None
+
         self.metadata_file = local_path / '.download_metadata.json'
         self.download_metadata = self._load_metadata()
 
@@ -642,7 +644,9 @@ class CloudBridge:
             file_meta = self.provider.client.api.get_meta(remote_path)
             return getattr(file_meta, 'md5', None)
         except Exception as e:
-            print(f"Ошибка получения хеша с облака: {e}")
+            if self._last_hash_error != str(e):
+                print(f"Ошибка получения хеша с облака: {e}")
+                self._last_hash_error = str(e)
             return None
 
     def _calculate_local_hash(self, file_path: Path) -> Optional[str]:

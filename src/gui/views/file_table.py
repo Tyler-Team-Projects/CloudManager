@@ -8,10 +8,10 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QInputDialog, QStyle, QApplication
 )
 
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData, QUrl, QEvent
 from PyQt6.QtGui import (
     QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence,
-    QDragEnterEvent, QDragMoveEvent, QDropEvent
+    QDragEnterEvent, QDragMoveEvent, QDropEvent, QDrag
 )
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
@@ -231,10 +231,14 @@ class FileTableView(QWidget):
         self._current_display_path = ""
         self._clipboard_items: List[CloudFile] = []
         self._is_cloud_provider = False
+        self._drag_start_pos = None
+        self._drag_start_index = None
         self._setup_ui()
         self._last_icon_path = None
         self._icon_view_initialized = False
         self._setup_context_menu()
+        self.icon_view.viewport().installEventFilter(self)
+        self.table_view.viewport().installEventFilter(self)
 
     def _setup_ui(self) -> None:
         """Настройка UI."""
@@ -259,6 +263,8 @@ class FileTableView(QWidget):
         self.icon_view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.icon_view.setFlow(QListWidget.Flow.LeftToRight)
         self.icon_view.setWrapping(True)
+
+        self.icon_view.setDragEnabled(True)
 
         self.icon_view.setAcceptDrops(True)
         self.icon_view.dragEnterEvent = self.dragEnterEvent
@@ -305,6 +311,8 @@ class FileTableView(QWidget):
         self.table_view.horizontalHeader().setStretchLastSection(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self.table_view.setDragEnabled(True)
 
         self.table_view.setAcceptDrops(True)
         self.table_view.dragEnterEvent = self.dragEnterEvent
@@ -400,9 +408,9 @@ class FileTableView(QWidget):
         for item in self._current_items:
             self._add_icon_item(item)
 
-    def _update_icon_view_incremental(self, new_items: List[CloudFile]) -> None:
+    def _update_icon_view_incremental(self, new_items: List[CloudFile], old_items_list: List[CloudFile]) -> None:
         """Частичное обновление иконок – только изменившиеся элементы."""
-        old_items = {item.path: item for item in self._current_items}
+        old_items = {item.path: item for item in old_items_list}
         new_paths = {item.path for item in new_items}
 
         # Удаляем исчезнувшие элементы (с конца к началу)
@@ -502,6 +510,8 @@ class FileTableView(QWidget):
     def set_files(self, files: List[CloudFile], provider: BaseCloudProvider, is_cloud: bool = False,
                   path: str = None) -> None:
         self._current_provider = provider
+
+        old_items_for_icons = self._current_items
         self._current_items = files
         provider_changed = (self._is_cloud_provider != is_cloud)
         self._is_cloud_provider = is_cloud
@@ -521,12 +531,11 @@ class FileTableView(QWidget):
         self._update_status_column_visibility()
 
         if self._view_mode == "icons":
-            # Полная перерисовка при первом показе, смене провайдера или смене папки
             if not self._icon_view_initialized or provider_changed or path_changed:
                 self._update_icon_view()
                 self._icon_view_initialized = True
             else:
-                self._update_icon_view_incremental(files)
+                self._update_icon_view_incremental(files, old_items_for_icons)
 
     def _update_status_column_visibility(self) -> None:
         self.table_view.setColumnHidden(2, not self._is_cloud_provider)
@@ -545,6 +554,19 @@ class FileTableView(QWidget):
                 if item:
                     items.append(item)
         return items
+
+    def add_file(self, file_item: CloudFile) -> None:
+        """Мгновенно добавляет один файл в таблицу и иконки (для облачной загрузки)."""
+        # Добавляем в модель таблицы
+        self.table_model._append_item(file_item)
+        # Если активна сортировка, пересортируем
+        if self.sort_proxy.sortColumn() >= 0:
+            self.sort_proxy.sort(self.sort_proxy.sortColumn(), self.sort_proxy.sortOrder())
+        # Добавляем иконку, если режим иконок
+        if self._view_mode == "icons":
+            self._add_icon_item(file_item)
+        # Обновляем внутренний список
+        self._current_items.append(file_item)
 
     def _source_index(self, index: QModelIndex) -> QModelIndex:
         model = self.table_view.model()
@@ -701,6 +723,110 @@ class FileTableView(QWidget):
                 self.files_dropped.emit(local_paths)
         else:
             event.ignore()
+
+    def _start_drag(self, items: List[CloudFile]) -> None:
+        """Начинает перетаскивание файлов из приложения в ОС."""
+        urls = []
+        for item in items:
+            if item.is_dir:
+                continue
+
+            local_path = self._get_local_path(item)
+            if local_path and local_path.exists():
+                urls.append(QUrl.fromLocalFile(str(local_path)))
+            else:
+                print(f"DEBUG: file {item.name} not found locally")
+
+        if not urls:
+            return
+
+        mime_data = QMimeData()
+        mime_data.setUrls(urls)
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        result = drag.exec(Qt.DropAction.CopyAction)
+
+    def eventFilter(self, obj, event):
+        """Фильтр событий для перехвата событий от мышки."""
+
+        # Определяем, какому виджету принадлежит этот viewport
+        current_view = None
+        if obj == self.icon_view.viewport():
+            current_view = self.icon_view
+        elif obj == self.table_view.viewport():
+            current_view = self.table_view
+
+        if current_view is not None:
+            # Нажатие кнопки мыши
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    # Используем глобальную позицию
+                    self._drag_start_pos = event.globalPosition().toPoint()
+
+                    # Координаты клика внутри виджета для определения элемента
+                    local_pos = event.pos()
+                    if current_view == self.icon_view:
+                        item = current_view.itemAt(local_pos)
+                        self._drag_start_index = item if item else None
+                    else:
+                        index = current_view.indexAt(local_pos)
+                        self._drag_start_index = index if index.isValid() else None
+
+                    # Возвращаем False, чтобы виджет выделил элемент
+                    return False
+
+            # Движение мыши
+            elif event.type() == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    if self._drag_start_pos:
+                        current_global_pos = event.globalPosition().toPoint()
+                        if (current_global_pos - self._drag_start_pos).manhattanLength() >= 5:
+                            # Проверяем, что кликнули на элемент, а не на пустое место
+                            if self._drag_start_index is not None:
+                                items = self.get_selected_items()
+                                if items:
+                                    can_drag = any(not item.is_dir for item in items)
+                                    if can_drag:
+                                        self._drag_start_pos = None
+                                        self._drag_start_index = None
+                                        self._start_drag(items)
+                                        return True
+                        return False
+                else:
+                    # Если кнопка мыши не нажата, сбрасываем позицию
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
+
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
+
+        return super().eventFilter(obj, event)
+
+    def _get_local_path(self, item: CloudFile) -> Optional[Path]:
+        """Получить локальный путь к файлу."""
+        # Локальный провайдер
+        if hasattr(self._current_provider, 'get_mounts_root'):
+            if hasattr(self._current_provider, 'get_absolute_path'):
+                abs_path = self._current_provider.get_absolute_path(item.path)
+                return Path(abs_path)
+            else:
+                return Path.home() / item.name
+
+        # Облачный провайдер - проверяем, скачан ли файл
+        if self._is_cloud_provider:
+            from core.local.cloud_provider_adapter import CloudProviderAdapter
+            if isinstance(self._current_provider, CloudProviderAdapter):
+                bridge = self._current_provider._bridge
+                local_file = bridge.downloads_path / item.name
+                if local_file.exists():
+                    return local_file
+
+        return None
+
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
         if self._is_mounts_root():

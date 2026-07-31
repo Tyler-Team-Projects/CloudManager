@@ -24,6 +24,7 @@ class SideBar(QWidget):
         super().__init__(parent)
         self._providers: Dict[str, BaseCloudProvider] = {}
         self._setup_ui()
+        self._tree_worker = None
 
     def _setup_ui(self) -> None:
         """Настройка UI."""
@@ -180,35 +181,58 @@ class SideBar(QWidget):
         # Очищаем старые дочерние элементы
         item.removeRows(0, item.rowCount())
 
-        try:
-            items = provider.list_files(path)
+        # Останавливаем предыдущий воркер, если он ещё работает
+        if self._tree_worker and self._tree_worker.isRunning():
+            self._tree_worker.requestInterruption()
+            self._tree_worker.wait(1000)
 
-            for file_item in items:
-                if not file_item.is_dir:
-                    continue
+        loading_item = QStandardItem("Загрузка...")
+        loading_item.setEnabled(False)
+        item.appendRow(loading_item)
 
-                child = QStandardItem(file_item.name)
-                child.setData(provider, Qt.ItemDataRole.UserRole)
-                child.setData(file_item.path, Qt.ItemDataRole.UserRole + 1)
-                child.setIcon(QIcon.fromTheme("folder"))
-                child.setEditable(False)  # ⚠️ Запрещаем редактирование дочерних элементов
+        # Создаём и сохраняем воркер
+        self._tree_worker = ListDirectoryWorker(provider, path)
 
-                dummy = QStandardItem("")
-                dummy.setEnabled(False)
-                dummy.setEditable(False)  # ⚠️ Запрещаем редактирование заглушки
-                child.appendRow(dummy)
+        def on_finished(items):
+            if self._tree_worker:
+                self._tree_worker = None
+            self._on_tree_contents_loaded(items, item, provider)
 
-                item.appendRow(child)
+        def on_error(err):
+            if self._tree_worker:
+                self._tree_worker = None
+            self._on_tree_load_error(err, item)
 
-        except Exception as e:
-            error_item = QStandardItem(f"Ошибка: {e}")
-            error_item.setEnabled(False)
-            error_item.setEditable(False)
-            item.appendRow(error_item)
-
-        # Эмитим сигнал выбора, чтобы основная панель тоже обновилась
-        self.provider_selected.emit(provider, path)
+        self._tree_worker.finished.connect(on_finished)
+        self._tree_worker.error.connect(on_error)
+        self._tree_worker.start()
 
     def refresh_tree(self) -> None:
         """Публичный метод обновления дерева."""
         self._on_refresh_clicked()
+
+    def _on_tree_contents_loaded(self, items, parent_item, provider):
+        """Заполнить дочерние элементы после успешной загрузки."""
+        parent_item.removeRows(0, parent_item.rowCount())  # убираем "Загрузка..."
+        for file_item in items:
+            if not file_item.is_dir:
+                continue
+            child = QStandardItem(file_item.name)
+            child.setData(provider, Qt.ItemDataRole.UserRole)
+            child.setData(file_item.path, Qt.ItemDataRole.UserRole + 1)
+            child.setIcon(QIcon.fromTheme("folder"))
+            child.setEditable(False)
+            # Заглушка для дальнейшего раскрытия
+            dummy = QStandardItem("")
+            dummy.setEnabled(False)
+            dummy.setEditable(False)
+            child.appendRow(dummy)
+            parent_item.appendRow(child)
+
+    def _on_tree_load_error(self, error_msg, parent_item):
+        """Показать ошибку в дереве."""
+        parent_item.removeRows(0, parent_item.rowCount())
+        error_item = QStandardItem(f"Ошибка: {error_msg}")
+        error_item.setEnabled(False)
+        error_item.setEditable(False)
+        parent_item.appendRow(error_item)
