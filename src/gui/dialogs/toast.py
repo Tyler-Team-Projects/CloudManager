@@ -4,13 +4,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint
+from core.constants import App, Settings, Timeouts, Providers, Views
 
 
 class ToastNotification(QWidget):
     """Всплывающее окно в правом нижнем углу экрана."""
 
     def __init__(self, title: str, message: str, button_text: str,
-                 callback, parent=None, duration: int = 10000):
+                 callback, parent=None, duration: int = Timeouts.TOAST_DEFAULT):
         super().__init__(parent)
         self._callback = callback
         self.setWindowFlags(

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from .cloud.syns_watcher import SyncWatcher
+from core.constants import Paths, App, Settings
 from PyQt6.QtCore import QSettings
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -32,13 +33,13 @@ class CloudBridge:
         local_path: Локальная папка, где будут кэшироваться файлы (например, /home/user/YandexDisk)
         """
         self.local_path = local_path
-        self.downloads_path = local_path / 'Downloads'
-        settings = QSettings("TeamTyler", "DiscoHack")
-        custom_download = settings.value("download_folder", "")
+        self.downloads_path = Paths.DOWNLOADS
+        settings = QSettings(App.ORGANIZATION, App.NAME)
+        custom_download = settings.value(Settings.DOWNLOAD_FOLDER, "")
         if custom_download:
             self.downloads_path = Path(custom_download)
         else:
-            self.downloads_path = local_path / 'Downloads'
+            self.downloads_path = Paths.DOWNLOADS
         self.downloads_path.mkdir(parents=True, exist_ok=True)
 
         self.downloads_path.mkdir(parents=True, exist_ok=True)
@@ -50,12 +51,8 @@ class CloudBridge:
 
         self._last_hash_error = None
 
-        self.metadata_file = local_path / '.download_metadata.json'
+        self.metadata_file = Paths.DOWNLOAD_METADATA
         self.download_metadata = self._load_metadata()
-
-        # if self.has_token():
-        #     print("[SYNC] Token found, starting sync from __init__")
-        #     self.start_sync()
 
     def set_download_path(self, path: Path) -> None:
         """Установить новую папку для загрузок."""
@@ -86,20 +83,20 @@ class CloudBridge:
 
     def _delete_token_file(self):
         """Удаление файла с токеном."""
-        token_file = Path.home() / '.core-disko' / 'yandex.token'
+        token_file = Paths.TOKEN_FILE
         if token_file.exists():
             token_file.unlink()
 
     def _load_token(self) -> str:
         """Загрузить токен из файла"""
-        token_file = Path.home() / '.core-disko' / 'yandex.token'
+        token_file = Paths.TOKEN_FILE
         if token_file.exists():
             return token_file.read_text().strip()
         return None
 
     def save_token(self, token: str):
         """Сохранить токен"""
-        token_file = Path.home() / '.core-disko' / 'yandex.token'
+        token_file = Paths.TOKEN_FILE
         token_file.parent.mkdir(parents=True, exist_ok=True)
         token_file.write_text(token.strip())
         token_file.chmod(0o600)

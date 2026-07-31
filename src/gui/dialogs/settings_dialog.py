@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QSettings
 from core.autostart import enable_autostart, disable_autostart
+from core.constants import App, Settings, Timeouts, Providers, Views, CloseBehavior
 
 class SettingsDialog(QDialog):
     """Окно настроек с вкладками."""
@@ -14,7 +15,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
         self.setMinimumSize(600, 400)
-        self._settings = QSettings("TeamTyler", "DiscoHack")
+        self._settings = QSettings(App.ORGANIZATION, App.NAME)
 
         main_layout = QVBoxLayout(self)
 
@@ -51,14 +52,14 @@ class SettingsDialog(QDialog):
 
         # Уведомления (существующее)
         self.notify_check = QCheckBox("Показывать уведомления о завершении операций")
-        self.notify_check.setChecked(self._settings.value("show_notifications", True, type=bool))
+        self.notify_check.setChecked(self._settings.value(Settings.NOTIFICATIONS, True, type=bool))
         layout.addWidget(self.notify_check)
 
         # Длительность уведомлений
         toast_label = QLabel("Длительность уведомлений (сек):")
         self.toast_duration_spin = QSpinBox()
         self.toast_duration_spin.setRange(5, 30)
-        self.toast_duration_spin.setValue(self._settings.value("toast_duration", 10, type=int))
+        self.toast_duration_spin.setValue(self._settings.value(Settings.TOAST_DURATION, 10, type=int))
         layout.addWidget(toast_label)
         layout.addWidget(self.toast_duration_spin)
 
@@ -66,7 +67,7 @@ class SettingsDialog(QDialog):
         download_label = QLabel("Папка для скачивания:")
         self.download_path_edit = QLineEdit()
         self.download_path_edit.setReadOnly(True)
-        self.download_path_edit.setText(self._settings.value("download_folder", ""))
+        self.download_path_edit.setText(self._settings.value(Settings.DOWNLOAD_FOLDER, ""))
         browse_btn = QPushButton("Обзор...")
         browse_btn.clicked.connect(self._browse_download_folder)
 
@@ -83,10 +84,10 @@ class SettingsDialog(QDialog):
         self.tray_radio = QRadioButton("Сворачивать в системный трей")
         self.exit_radio = QRadioButton("Полностью закрывать приложение")
 
-        behavior = self._settings.value("close_behavior", "ask")
-        if behavior == "tray":
+        behavior = self._settings.value(Settings.CLOSE_BEHAVIOR, CloseBehavior.ASK)
+        if behavior == CloseBehavior.TRAY:
             self.tray_radio.setChecked(True)
-        elif behavior == "exit":
+        elif behavior == CloseBehavior.EXIT:
             self.exit_radio.setChecked(True)
 
         group_layout.addWidget(self.tray_radio)
@@ -95,7 +96,7 @@ class SettingsDialog(QDialog):
 
         # Автозапуск
         self.autostart_check = QCheckBox("Запускать вместе с системой")
-        self.autostart_check.setChecked(self._settings.value("autostart", False, type=bool))
+        self.autostart_check.setChecked(self._settings.value(Settings.AUTOSTART, False, type=bool))
         layout.addWidget(self.autostart_check)
 
         layout.addStretch()
@@ -122,7 +123,7 @@ class SettingsDialog(QDialog):
 
         # Показ скрытых файлов
         self.hidden_files_check = QCheckBox("Показывать скрытые файлы")
-        self.hidden_files_check.setChecked(self._settings.value("show_hidden_files", False, type=bool))
+        self.hidden_files_check.setChecked(self._settings.value(Settings.HIDDEN_FILES, False, type=bool))
         layout.addWidget(self.hidden_files_check)
 
         layout.addStretch()
@@ -135,14 +136,14 @@ class SettingsDialog(QDialog):
 
         # Включение синхронизации
         self.sync_enabled_check = QCheckBox("Включить фоновую синхронизацию")
-        self.sync_enabled_check.setChecked(self._settings.value("sync_enabled", True, type=bool))
+        self.sync_enabled_check.setChecked(self._settings.value(Settings.SYNC_ENABLED, True, type=bool))
         layout.addWidget(self.sync_enabled_check)
 
         # Интервал проверки
         interval_label = QLabel("Интервал проверки (сек):")
         self.sync_interval_spin = QSpinBox()
         self.sync_interval_spin.setRange(5, 300)
-        self.sync_interval_spin.setValue(self._settings.value("sync_interval", 30, type=int))
+        self.sync_interval_spin.setValue(self._settings.value(Settings.SYNC_INTERVAL, 30, type=int))
         # Доступность зависит от чекбокса
         self.sync_interval_spin.setEnabled(self.sync_enabled_check.isChecked())
         self.sync_enabled_check.toggled.connect(self.sync_interval_spin.setEnabled)
@@ -162,16 +163,16 @@ class SettingsDialog(QDialog):
     def _save_and_close(self):
         """Сохранить все настройки и закрыть."""
         # Общие
-        self._settings.setValue("show_notifications", self.notify_check.isChecked())
-        self._settings.setValue("toast_duration", self.toast_duration_spin.value())
-        self._settings.setValue("download_folder", self.download_path_edit.text())
+        self._settings.setValue(Settings.NOTIFICATIONS, self.notify_check.isChecked())
+        self._settings.setValue(Settings.TOAST_DURATION, self.toast_duration_spin.value())
+        self._settings.setValue(Settings.DOWNLOAD_FOLDER, self.download_path_edit.text())
         if self.tray_radio.isChecked():
-            self._settings.setValue("close_behavior", "tray")
+            self._settings.setValue(Settings.CLOSE_BEHAVIOR, CloseBehavior.TRAY)
         elif self.exit_radio.isChecked():
-            self._settings.setValue("close_behavior", "exit")
+            self._settings.setValue("close_behavior", CloseBehavior.EXIT)
         else:
-            self._settings.setValue("close_behavior", "ask")
-        self._settings.setValue("autostart", self.autostart_check.isChecked())
+            self._settings.setValue("close_behavior", CloseBehavior.ASK)
+        self._settings.setValue(Settings.AUTOSTART, self.autostart_check.isChecked())
         if self.autostart_check.isChecked():
             enable_autostart()
         else:
@@ -179,12 +180,12 @@ class SettingsDialog(QDialog):
 
         # Интерфейс
         view_mode = "table" if self.table_radio.isChecked() else "icons"
-        self._settings.setValue("default_view_mode", view_mode)
-        self._settings.setValue("show_hidden_files", self.hidden_files_check.isChecked())
+        self._settings.setValue( Settings.VIEW_MODE, view_mode)
+        self._settings.setValue(Settings.HIDDEN_FILES, self.hidden_files_check.isChecked())
 
         # Синхронизация
-        self._settings.setValue("sync_enabled", self.sync_enabled_check.isChecked())
-        self._settings.setValue("sync_interval", self.sync_interval_spin.value())
+        self._settings.setValue(Settings.SYNC_ENABLED, self.sync_enabled_check.isChecked())
+        self._settings.setValue(Settings.SYNC_INTERVAL, self.sync_interval_spin.value())
 
         self.accept()
 

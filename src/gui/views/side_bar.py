@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QIcon
 from gui.workers import ListDirectoryWorker, DownloadWorker, UploadWorker, SearchWorker
-
+from core.constants import Providers
 from api.common.base_provider import BaseCloudProvider
 
 
@@ -76,7 +76,7 @@ class SideBar(QWidget):
     def _on_refresh_clicked(self) -> None:
         """Обработка клика по кнопке обновления."""
         # Обновляем кэш локального провайдера
-        if 'local' in self._providers and hasattr(self._providers['local'], 'refresh'):
+        if Providers.LOCAL in self._providers and hasattr(self._providers['local'], 'refresh'):
             self._providers['local'].refresh()
 
         # Сохраняем текущий выбор
@@ -112,7 +112,7 @@ class SideBar(QWidget):
             root_path = provider.get_root_path() if hasattr(provider, 'get_root_path') else "/"
             provider_item.setData(root_path, Qt.ItemDataRole.UserRole + 1)
 
-            if key == "local":
+            if key == Providers.LOCAL:
                 provider_item.setIcon(QIcon.fromTheme("drive-harddisk"))
             else:
                 if hasattr(provider, 'has_token') and not provider.has_token():
@@ -127,7 +127,7 @@ class SideBar(QWidget):
             if current_provider == provider:
                 self._last_provider_item = provider_item
 
-            if key == "local":
+            if key == Providers.LOCAL:
                 yadisk_path = Path.home() / 'YandexDisk'
                 if yadisk_path.exists():
                     yadisk_item = QStandardItem("YandexDisk")

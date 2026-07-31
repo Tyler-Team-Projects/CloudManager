@@ -4,8 +4,10 @@ import time
 from pathlib import Path
 from typing import List, Optional
 from api.common.models import CloudFile
+from core.constants import Paths
+from core.constants import App, Settings, Timeouts, Providers, Views
 
-DB_PATH = Path.home() / '.cloudmanager_cache.db'
+DB_PATH = Paths.CACHE_DB
 
 class FolderCache:
     def __init__(self):
@@ -74,7 +76,7 @@ class FolderCache:
         try:
             row = conn.execute(
                 'SELECT updated FROM folder_cache WHERE path=? AND provider_type=?',
-                (path, 'local')
+                (path, Providers.LOCAL)
             ).fetchone()
             if row:
                 return row[0]
