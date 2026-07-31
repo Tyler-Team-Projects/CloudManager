@@ -5,6 +5,10 @@ from pathlib import Path
 from api.common.base_provider import BaseCloudProvider
 from api.common.models import CloudFile
 from api.common.exceptions import CloudError
+from core.logger import get_logger
+
+logger = get_logger('file_table')
+
 class CloudProviderAdapter(BaseCloudProvider):
     """Адаптер для CloudBridge, реализующий интерфейс BaseCloudProvider."""
 
@@ -237,5 +241,5 @@ class CloudProviderAdapter(BaseCloudProvider):
 
             return True
         except Exception as e:
-            print(f"Ошибка копирования: {e}")
+            logger.error(f"Ошибка копирования: {e}")
             return False

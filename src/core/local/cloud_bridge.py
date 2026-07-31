@@ -18,6 +18,9 @@ from api.manager import CloudManager
 from api.providers.yadisk.provider import YandexDiskProvider
 from api.common.exceptions import CloudAuthError, CloudNotFoundError
 from core.cache_manager import FolderCache
+from core.logger import get_logger
+
+logger = get_logger('file_table')
 
 
 
@@ -70,13 +73,13 @@ class CloudBridge:
                 provider = YandexDiskProvider()
                 if provider.login(token):
                     self.provider = provider
-                    print("Яндекс Диск подключен")
+                    logger.info("Яндекс Диск подключен")
                 else:
-                    print("Не удалось подключиться к Яндекс Диску")
+                    logger.warning("Не удалось подключиться к Яндекс Диску")
                     self.provider = None
                     self._delete_token_file()
             except Exception as e:
-                print(f"Ошибка подключения: {e}")
+                logger.error(f"Ошибка подключения: {e}")
                 self.provider = None
         else:
             self.provider = None
@@ -248,7 +251,7 @@ class CloudBridge:
             force_overwrite: если True - перезаписывать существующий файл
         """
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         # Если путь не указан - определяем с учетом флага force_overwrite
@@ -259,8 +262,8 @@ class CloudBridge:
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            print(f"Скачивание {remote_path}...")
-            print(f"Сохранение в: {local_path}")
+            logger.info(f"Скачивание {remote_path}...")
+            logger.info(f"Сохранение в: {local_path}")
 
             callback = progress_callback if progress_callback else self._progress_callback
             self.provider.download_file(remote_path, str(local_path), callback)
@@ -286,15 +289,15 @@ class CloudBridge:
             cache = FolderCache()
             cache.save_hashes(remote_path, remote_hash, local_hash)
 
-            print(f"\nСкачано: {local_path}")
+            logger.info(f"Скачано: {local_path}")
             if remote_hash and local_hash:
                 if remote_hash == local_hash:
-                    print("Файл синхронизирован")
+                    logger.info("Файл синхронизирован")
                 else:
-                    print("Хеши не совпадают! Возможно, файл был изменен во время загрузки.")
+                    logger.warning("Хеши не совпадают! Возможно, файл был изменен во время загрузки.")
             return True
         except Exception as e:
-            print(f"\nОшибка скачивания: {e}")
+            logger.error(f"Ошибка скачивания: {e}")
             return False
 
     def _get_download_path(self, remote_path: str, force_overwrite: bool = False) -> Path:
@@ -410,7 +413,7 @@ class CloudBridge:
     def open_file(self, filename: str) -> bool:
         """Открыть файл из облака (сохраняется в Downloads)."""
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         # Нормализация пути
@@ -421,7 +424,7 @@ class CloudBridge:
         clean_filename = clean_filename.lstrip('/')
         remote_path = f"{current}/{clean_filename}"
         remote_path = remote_path.replace('//', '/')
-        print(f"DEBUG: open_file - remote_path = {remote_path}")
+        logger.debug(f"open_file - remote_path = {remote_path}")
 
         original_name = Path(remote_path).name
         original_local = self.downloads_path / original_name
@@ -441,7 +444,7 @@ class CloudBridge:
                     subprocess.run(['xdg-open', str(original_local)], check=True)
                     return True
             except Exception as e:
-                print(f"Не удалось открыть {filename}: {e}")
+                logger.error(f"Не удалось открыть {filename}: {e}")
                 return False
         else:
             # Скачиваем файл
@@ -462,35 +465,33 @@ class CloudBridge:
                     subprocess.run(['xdg-open', str(local_file)], check=True)
                     return True
             except Exception as e:
-                print(f"Не удалось открыть {filename}: {e}")
+                logger.error(f"Не удалось открыть {filename}: {e}")
                 return False
 
-    def upload_file(self, local_path: Path, remote_path: str = None, progress_callback = None) -> bool:
+    def upload_file(self, local_path: Path, remote_path: str = None, progress_callback=None) -> bool:
         """
         Загрузить файл в облако
         """
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         if remote_path is None:
             remote_path = self.current_path.rstrip('/') + '/' + local_path.name
 
         try:
-            print(f"Загрузка {local_path} -> {remote_path}...")
+            logger.info(f"Загрузка {local_path} -> {remote_path}...")
             self.provider.upload_file(str(local_path), remote_path, progress_callback)
-            print("Загружено")
+            logger.info("Загружено")
             return True
         except Exception as e:
-            print(f"Ошибка загрузки: {e}")
+            logger.error(f"Ошибка загрузки: {e}")
             return False
 
     def create_folder(self, folder_name: str) -> bool:
-        """
-        Создать папку в облаке
-        """
+        """Создать папку в облаке."""
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         remote_path = self.current_path.rstrip('/') + '/' + folder_name.lstrip('/')
@@ -498,19 +499,16 @@ class CloudBridge:
 
         try:
             self.provider.create_folder(remote_path)
-            print(f"Папка '{folder_name}' создана")
+            logger.info(f"Папка '{folder_name}' создана")
             return True
         except Exception as e:
-            print(f"Ошибка создания папки: {e}")
+            logger.error(f"Ошибка создания папки: {e}")
             return False
 
     def delete_file(self, remote_path: str) -> bool:
-        """
-        Удалить файл/папку в облаке.
-        remote_path – полный путь, например '/folder/file.txt'
-        """
+        """Удалить файл/папку в облаке (remote_path - полный путь, например '/folder/file.txt).'"""
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         # Нормализуем путь (убираем возможный префикс yadisk:// и двойные слеши)
@@ -529,16 +527,16 @@ class CloudBridge:
 
         try:
             self.provider.delete_file(clean_path)
-            print(f"'{remote_path}' удалён")
+            logger.info(f"'{remote_path}' удалён")
             return True
         except Exception as e:
-            print(f"Ошибка удаления: {e}")
+            logger.error(f"Ошибка удаления: {e}")
             return False
 
     def rename_file(self, old_path: str, new_path: str) -> bool:
         """Переименовать файл/папку в облаке."""
         if not self.provider:
-            print("Облако не подключено")
+            logger.warning("Облако не подключено")
             return False
 
         try:
@@ -551,10 +549,10 @@ class CloudBridge:
             if local_old.exists():
                 local_old.rename(local_new)
 
-            print(f"Renamed '{old_path}' -> '{new_path}' in cloud")
+            logger.info(f"Renamed '{old_path}' -> '{new_path}' in cloud")
             return True
         except Exception as e:
-            print(f"Rename error: {e}")
+            logger.error(f"Rename error: {e}")
             return False
 
     def sync_cloud_to_local(self, remote_path: str = "/") -> dict:
@@ -585,7 +583,7 @@ class CloudBridge:
 
             return result
         except Exception as e:
-            print(f"[SYNC] Cloud check error: {e}")
+            logger.error(f"[SYNC] Cloud check error: {e}")
             return result
 
     def start_sync(self, refresh_callback=None, hash_update_callback=None) -> None:
@@ -596,14 +594,14 @@ class CloudBridge:
             self._sync_watcher = SyncWatcher(self, self.local_path, refresh_callback, hash_update_callback)
         if not self._sync_watcher.is_running():
             self._sync_watcher.start_background()
-            print("[SYNC] Фоновая синхронизация запущена")
+            logger.info("[SYNC] Фоновая синхронизация запущена")
 
     def stop_sync(self) -> None:
         """Остановка фоновой синхронизации."""
         if self._sync_watcher:
             self._sync_watcher.stop()
             self._sync_watcher = None
-            print("[SYNC] Фоновая синхронизация остановлена")
+            logger.info("[SYNC] Фоновая синхронизация остановлена")
 
     def is_sync_running(self) -> bool:
         """Проверка статуса синхронизации."""
@@ -628,7 +626,7 @@ class CloudBridge:
                 'percent': percent
             }
         except Exception as e:
-            print(f"Ошибка получения информации о диске: {e}")
+            logger.error(f"Ошибка получения информации о диске: {e}")
             return {'total': 0, 'used': 0, 'free': 0, 'percent': 0}
 
     def _get_remote_hash(self, remote_path: str) -> Optional[str]:
@@ -645,7 +643,7 @@ class CloudBridge:
             return getattr(file_meta, 'md5', None)
         except Exception as e:
             if self._last_hash_error != str(e):
-                print(f"Ошибка получения хеша с облака: {e}")
+                logger.error(f"Ошибка получения хеша с облака: {e}")
                 self._last_hash_error = str(e)
             return None
 
@@ -668,7 +666,7 @@ class CloudBridge:
 
             return md5_hash.hexdigest()
         except Exception as e:
-            print(f"Ошибка вычисления хеша локального файла: {e}")
+            logger.error(f"Ошибка вычисления хеша локального файла: {e}")
             return None
 
     def get_public_link(self, remote_path: str) -> Optional[str]:
@@ -726,7 +724,8 @@ class CloudBridge:
             else:
                 result['needs_download'] = True
 
+
         except Exception as e:
-            print(f"Ошибка проверки синхронизации: {e}")
+            logger.error(f"Ошибка проверки синхронизации: {e}")
 
         return result

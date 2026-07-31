@@ -2,13 +2,14 @@ import io
 import time
 import yadisk
 from typing import List, Optional, Dict
-from loguru import logger
+from core.logger import get_logger
 
 from .client import YandexDiskClient
 from ...common.base_provider import BaseCloudProvider
 from ...common.models import CloudFile
 from ...common.exceptions import CloudAPIError, CloudQuotaError
 
+logger = get_logger('yadisk_provider')
 
 class YandexDiskProvider(BaseCloudProvider):
 

@@ -8,14 +8,17 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QInputDialog, QStyle, QApplication
 )
 
-from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint, QModelIndex, QSize, QSortFilterProxyModel, QMimeData, QUrl, QEvent
 from PyQt6.QtGui import (
     QAction, QIcon, QStandardItemModel, QStandardItem, QKeySequence,
-    QDragEnterEvent, QDragMoveEvent, QDropEvent
+    QDragEnterEvent, QDragMoveEvent, QDropEvent, QDrag
 )
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
+from core.logger import get_logger
+
+logger = get_logger('file_table')
 
 
 class FileSortFilterProxyModel(QSortFilterProxyModel):
@@ -231,10 +234,14 @@ class FileTableView(QWidget):
         self._current_display_path = ""
         self._clipboard_items: List[CloudFile] = []
         self._is_cloud_provider = False
+        self._drag_start_pos = None
+        self._drag_start_index = None
         self._setup_ui()
         self._last_icon_path = None
         self._icon_view_initialized = False
         self._setup_context_menu()
+        self.icon_view.viewport().installEventFilter(self)
+        self.table_view.viewport().installEventFilter(self)
 
     def _setup_ui(self) -> None:
         """Настройка UI."""
@@ -259,6 +266,8 @@ class FileTableView(QWidget):
         self.icon_view.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.icon_view.setFlow(QListWidget.Flow.LeftToRight)
         self.icon_view.setWrapping(True)
+
+        self.icon_view.setDragEnabled(True)
 
         self.icon_view.setAcceptDrops(True)
         self.icon_view.dragEnterEvent = self.dragEnterEvent
@@ -305,6 +314,8 @@ class FileTableView(QWidget):
         self.table_view.horizontalHeader().setStretchLastSection(True)
         self.table_view.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table_view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self.table_view.setDragEnabled(True)
 
         self.table_view.setAcceptDrops(True)
         self.table_view.dragEnterEvent = self.dragEnterEvent
@@ -562,7 +573,6 @@ class FileTableView(QWidget):
 
     def _source_index(self, index: QModelIndex) -> QModelIndex:
         model = self.table_view.model()
-        print(f"[DEBUG] model type: {type(model).__name__}")
         if isinstance(model, QSortFilterProxyModel):
             return model.mapToSource(index)
         return index
@@ -711,18 +721,121 @@ class FileTableView(QWidget):
                     local_paths.append(url.toLocalFile())
 
             if local_paths:
-                print(f"DEBUG: Dropped {len(local_paths)} files: {local_paths}")
                 self.files_dropped.emit(local_paths)
         else:
             event.ignore()
+
+    def _start_drag(self, items: List[CloudFile]) -> None:
+        """Начинает перетаскивание файлов из приложения в ОС."""
+        urls = []
+        for item in items:
+            if item.is_dir:
+                continue
+
+            local_path = self._get_local_path(item)
+            if local_path and local_path.exists():
+                urls.append(QUrl.fromLocalFile(str(local_path)))
+            else:
+                logger.debug(f"File {item.name} not found locally")
+
+        if not urls:
+            return
+
+        mime_data = QMimeData()
+        mime_data.setUrls(urls)
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        result = drag.exec(Qt.DropAction.CopyAction)
+
+    def eventFilter(self, obj, event):
+        """Фильтр событий для перехвата событий от мышки."""
+
+        # Определяем, какому виджету принадлежит этот viewport
+        current_view = None
+        if obj == self.icon_view.viewport():
+            current_view = self.icon_view
+        elif obj == self.table_view.viewport():
+            current_view = self.table_view
+
+        if current_view is not None:
+            # Нажатие кнопки мыши
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    # Используем глобальную позицию
+                    self._drag_start_pos = event.globalPosition().toPoint()
+
+                    # Координаты клика внутри виджета для определения элемента
+                    local_pos = event.pos()
+                    if current_view == self.icon_view:
+                        item = current_view.itemAt(local_pos)
+                        self._drag_start_index = item if item else None
+                    else:
+                        index = current_view.indexAt(local_pos)
+                        self._drag_start_index = index if index.isValid() else None
+
+                    # Возвращаем False, чтобы виджет выделил элемент
+                    return False
+
+            # Движение мыши
+            elif event.type() == QEvent.Type.MouseMove:
+                if event.buttons() & Qt.MouseButton.LeftButton:
+                    if self._drag_start_pos:
+                        current_global_pos = event.globalPosition().toPoint()
+                        if (current_global_pos - self._drag_start_pos).manhattanLength() >= 5:
+                            # Проверяем, что кликнули на элемент, а не на пустое место
+                            if self._drag_start_index is not None:
+                                items = self.get_selected_items()
+                                if items:
+                                    can_drag = any(not item.is_dir for item in items)
+                                    if can_drag:
+                                        self._drag_start_pos = None
+                                        self._drag_start_index = None
+                                        self._start_drag(items)
+                                        return True
+                        return False
+                else:
+                    # Если кнопка мыши не нажата, сбрасываем позицию
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
+
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._drag_start_pos = None
+                    self._drag_start_index = None
+                return False
+
+        return super().eventFilter(obj, event)
+
+    def _get_local_path(self, item: CloudFile) -> Optional[Path]:
+        """Получить локальный путь к файлу."""
+        # Локальный провайдер
+        if hasattr(self._current_provider, 'get_mounts_root'):
+            if hasattr(self._current_provider, 'get_absolute_path'):
+                abs_path = self._current_provider.get_absolute_path(item.path)
+                return Path(abs_path)
+            else:
+                return Path.home() / item.name
+
+        # Облачный провайдер - проверяем, скачан ли файл
+        if self._is_cloud_provider:
+            from core.local.cloud_provider_adapter import CloudProviderAdapter
+            if isinstance(self._current_provider, CloudProviderAdapter):
+                bridge = self._current_provider._bridge
+                local_file = bridge.downloads_path / item.name
+                if local_file.exists():
+                    return local_file
+
+        return None
+
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
         if self._is_mounts_root():
-            print("Скачивание запрещено в mounts://")
+            logger.debug("Скачивание запрещено в mounts://")
             return
 
         if self._is_local_provider():
-            print("Скачивание запрещено на локальном диске")
+            logger.debug("Скачивание запрещено на локальном диске")
             return
 
         items = self.get_selected_items()
@@ -733,11 +846,11 @@ class FileTableView(QWidget):
     def _on_check_sync(self) -> None:
         """Проверка синхронизации выбранных файлов."""
         if self._is_mounts_root():
-            print("Проверка синхронизации запрещена в mounts://")
+            logger.debug("Проверка синхронизации запрещена в mounts://")
             return
 
         if self._is_local_provider():
-            print("Проверка синхронизации доступна только в облачной папке")
+            logger.debug("Проверка синхронизации доступна только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -749,11 +862,11 @@ class FileTableView(QWidget):
     def _on_update(self) -> None:
         """Обновление локальной копии из облака (перезапись)."""
         if self._is_mounts_root():
-            print("Обновление запрещено в mounts://")
+            logger.debug("Обновление запрещено в mounts://")
             return
 
         if self._is_local_provider():
-            print("Обновление доступно только в облачной папке")
+            logger.debug("Обновление доступно только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -768,7 +881,7 @@ class FileTableView(QWidget):
     def _on_delete(self) -> None:
         """Удаление."""
         if self._is_mounts_root():
-            print("Удаление запрещено в mounts://")
+            logger.debug("Удаление запрещено в mounts://")
             return
 
         items = self.get_selected_items()
@@ -780,13 +893,13 @@ class FileTableView(QWidget):
             root_path = self._current_provider.get_root_path()
             current_path = getattr(self, '_current_path', "")
             if root_path == "mounts://" and current_path == "mounts://":
-                print("Нельзя удалять в корневой директории")
+                logger.debug("Нельзя удалять в корневой директории")
                 return
 
         # Проверяем, нет ли корневых элементов
         for item in items:
             if self._is_root_item(item):
-                print("Нельзя удалить корневой элемент")
+                logger.debug(f"Нельзя удалить корневой элемент: {item.name}")
                 return
 
         # self.delete_requested.emit(items)
@@ -862,7 +975,7 @@ class FileTableView(QWidget):
     def _on_copy(self) -> None:
         """Копирование."""
         if self._is_mounts_root():
-            print("Копирование запрещено в mounts://")
+            logger.debug("Копирование запрещено в mounts://")
             return
 
         items = self.get_selected_items()
@@ -872,10 +985,8 @@ class FileTableView(QWidget):
 
     def _on_paste(self) -> None:
         """Вставить файлы из буфера."""
-        print(f"DEBUG: _on_paste вызван, буфер содержит {len(self._clipboard_items)} элементов")
 
         if not self._clipboard_items:
-            print("DEBUG: Буфер пуст")
             return
 
         self.paste_requested.emit()
@@ -932,6 +1043,6 @@ class FileTableView(QWidget):
                                               Qt.TransformationMode.SmoothTransformation)
                 return QIcon(scaled_pixmap)
         except Exception as e:
-            print(f"Не удалось создать миниатюру для {file_path}: {e}")
+            logger.debug(f"Не удалось создать миниатюру для {file_path}: {e}")
 
         return QIcon.fromTheme("image-x-generic")
