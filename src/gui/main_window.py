@@ -43,6 +43,9 @@ from .dialogs.settings_dialog import SettingsDialog
 from .dialogs.download_conflict_dialog import DownloadConflictDialog
 from .dialogs.public_link_dialog import PublicLinkDialog
 from .dialogs.login_dialog import LoginDialog
+from core.logger import get_logger
+
+logger = get_logger('file_table')
 
 class MainWindow(QMainWindow):
     """Главное окно облачного менеджера."""
@@ -935,7 +938,7 @@ class MainWindow(QMainWindow):
         else:
             file_name = "Неизвестный файл"
 
-        print(f"[ERROR] Save As failed for {file_name}: {error}")
+        logger.error(f"Save As failed for {file_name}: {error}")
         self._notify_save_as_failed(file_name, error)
         self._save_as_next()
 
@@ -1139,8 +1142,7 @@ class MainWindow(QMainWindow):
                     shutil.copy2(src, dest)
                 success_count += 1
             except Exception as e:
-                print(f"Ошибка копирования {file_path}: {e}")
-
+                logger.error(f"Ошибка копирования {file_path}: {e}")
         self.status_bar.showMessage(f"Скопировано {success_count} из {total_files} файлов")
         self._on_refresh()
 
@@ -1262,13 +1264,13 @@ class MainWindow(QMainWindow):
         if local_path.exists():
             try:
                 local_path.unlink()
-                print(f"DEBUG: Удален старый файл: {local_path}")
+                logger.debug(f"Удален старый файл: {local_path}")
             except PermissionError:
                 temp_name = local_path.with_suffix(f".old_{int(time.time())}{local_path.suffix}")
                 local_path.rename(temp_name)
-                print(f"DEBUG: Файл занят, переименован в {temp_name}")
+                logger.debug(f"Файл занят, переименован в {temp_name}")
             except Exception as e:
-                print(f"ERROR: Не удалось удалить {local_path}: {e}")
+                logger.error(f"Не удалось удалить {local_path}: {e}")
 
         # скачиваем заново
         self._update_worker = DownloadWorker(
@@ -1329,7 +1331,7 @@ class MainWindow(QMainWindow):
         worker = self.sender()
         if worker in self._active_workers:
             self._active_workers.remove(worker)
-        print(f"[ERROR] Upload failed: {error}")
+        logger.error(f"Upload failed: {error}")
         if self._upload_queue:
             self._upload_queue.pop(0)
         self._upload_next()
@@ -1387,7 +1389,7 @@ class MainWindow(QMainWindow):
         worker = self.sender()
         if worker in self._active_workers:
             self._active_workers.remove(worker)
-        print(f"[ERROR] Update failed: {error}")
+        logger.error(f"Update failed: {error}")
         if self._update_queue:
             self._update_queue.pop(0)
         self._update_next()
@@ -1775,7 +1777,7 @@ class MainWindow(QMainWindow):
         worker = self.sender()
         if worker in self._active_workers:
             self._active_workers.remove(worker)
-        print(f"[ERROR] Delete failed for {path}: {error}")
+        logger.error(f"Delete failed for {path}: {error}")
         self._delete_next()
 
     def _refresh_disk_cache(self) -> None:
@@ -1942,7 +1944,7 @@ class MainWindow(QMainWindow):
             """)
 
         except Exception as e:
-            print(f"Ошибка обновления информации о диске: {e}")
+            logger.error(f"Ошибка обновления информации о диске: {e}")
             self.disk_label.setText("Яндекс.Диск: ошибка")
             self.disk_progress.setValue(0)
 
@@ -2044,7 +2046,7 @@ class MainWindow(QMainWindow):
                 return (True, free_space, "")
 
         except Exception as e:
-            print(f"Ошибка проверки места на диске: {e}")
+            logger.error(f"Ошибка проверки места на диске: {e}")
             return (False, 0, f"Ошибка проверки места на диске: {e}")
 
     def _update_auth_status(self) -> None:
@@ -2093,7 +2095,7 @@ class MainWindow(QMainWindow):
                 import keyring
                 keyring.delete_password("DiscoHack", "yandex_token")
             except Exception as e:
-                print(f"Ошибка удаления из keyring: {e}")
+                logger.error(f"Ошибка удаления из keyring: {e}")
 
             # Удаляем файл с токеном
             token_file = Path.home() / '.core-disko' / 'yandex.token'
@@ -2151,7 +2153,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Переименование запрещено в корневой директории")
             return
 
-        print(f"DEBUG: _on_file_rename вызван: {file_item.name} -> {new_name}")
+        logger.debug(f"_on_file_rename вызван: {file_item.name} -> {new_name}")
 
         if not self._current_provider:
             QMessageBox.warning(self, "Ошибка", "Нет активного провайдера")
@@ -2176,11 +2178,11 @@ class MainWindow(QMainWindow):
 
     def _on_copy_files(self, items: list) -> None:
         """Копирование файлов (сохраняем элементы и текущего провайдера)."""
-        print(f"DEBUG: _on_copy_files получил {len(items)} элементов")
+        logger.debug(f"_on_copy_files получил {len(items)} элементов")
         self._clipboard = items
         self._clipboard_source_provider = self._current_provider  # запоминаем, откуда скопировано
         for item in items:
-            print(f"  - {item.name}")
+            logger.debug(f"  - {item.name}")
         self.status_bar.showMessage(f"Скопировано {len(items)} элементов")
 
     def _on_paste_files(self) -> None:
@@ -2299,7 +2301,7 @@ class MainWindow(QMainWindow):
         worker = self.sender()
         if worker in self._active_workers:
             self._active_workers.remove(worker)
-        print(f"[ERROR] Copy failed: {error_msg}")
+        logger.error(f"Copy failed: {error_msg}")
         # Удаляем временный файл при ошибке
         if hasattr(self, '_copy_temp_path') and os.path.exists(self._copy_temp_path):
             try:

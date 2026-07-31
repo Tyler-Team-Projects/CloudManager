@@ -16,6 +16,9 @@ from PyQt6.QtGui import (
 from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
+from core.logger import get_logger
+
+logger = get_logger('file_table')
 
 
 class FileSortFilterProxyModel(QSortFilterProxyModel):
@@ -570,7 +573,6 @@ class FileTableView(QWidget):
 
     def _source_index(self, index: QModelIndex) -> QModelIndex:
         model = self.table_view.model()
-        print(f"[DEBUG] model type: {type(model).__name__}")
         if isinstance(model, QSortFilterProxyModel):
             return model.mapToSource(index)
         return index
@@ -719,7 +721,6 @@ class FileTableView(QWidget):
                     local_paths.append(url.toLocalFile())
 
             if local_paths:
-                print(f"DEBUG: Dropped {len(local_paths)} files: {local_paths}")
                 self.files_dropped.emit(local_paths)
         else:
             event.ignore()
@@ -735,7 +736,7 @@ class FileTableView(QWidget):
             if local_path and local_path.exists():
                 urls.append(QUrl.fromLocalFile(str(local_path)))
             else:
-                print(f"DEBUG: file {item.name} not found locally")
+                logger.debug(f"File {item.name} not found locally")
 
         if not urls:
             return
@@ -830,11 +831,11 @@ class FileTableView(QWidget):
     def _on_download(self) -> None:
         """Скачивание выбранных файлов."""
         if self._is_mounts_root():
-            print("Скачивание запрещено в mounts://")
+            logger.debug("Скачивание запрещено в mounts://")
             return
 
         if self._is_local_provider():
-            print("Скачивание запрещено на локальном диске")
+            logger.debug("Скачивание запрещено на локальном диске")
             return
 
         items = self.get_selected_items()
@@ -845,11 +846,11 @@ class FileTableView(QWidget):
     def _on_check_sync(self) -> None:
         """Проверка синхронизации выбранных файлов."""
         if self._is_mounts_root():
-            print("Проверка синхронизации запрещена в mounts://")
+            logger.debug("Проверка синхронизации запрещена в mounts://")
             return
 
         if self._is_local_provider():
-            print("Проверка синхронизации доступна только в облачной папке")
+            logger.debug("Проверка синхронизации доступна только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -861,11 +862,11 @@ class FileTableView(QWidget):
     def _on_update(self) -> None:
         """Обновление локальной копии из облака (перезапись)."""
         if self._is_mounts_root():
-            print("Обновление запрещено в mounts://")
+            logger.debug("Обновление запрещено в mounts://")
             return
 
         if self._is_local_provider():
-            print("Обновление доступно только в облачной папке")
+            logger.debug("Обновление доступно только в облачной папке")
             return
 
         items = self.get_selected_items()
@@ -880,7 +881,7 @@ class FileTableView(QWidget):
     def _on_delete(self) -> None:
         """Удаление."""
         if self._is_mounts_root():
-            print("Удаление запрещено в mounts://")
+            logger.debug("Удаление запрещено в mounts://")
             return
 
         items = self.get_selected_items()
@@ -892,13 +893,13 @@ class FileTableView(QWidget):
             root_path = self._current_provider.get_root_path()
             current_path = getattr(self, '_current_path', "")
             if root_path == "mounts://" and current_path == "mounts://":
-                print("Нельзя удалять в корневой директории")
+                logger.debug("Нельзя удалять в корневой директории")
                 return
 
         # Проверяем, нет ли корневых элементов
         for item in items:
             if self._is_root_item(item):
-                print("Нельзя удалить корневой элемент")
+                logger.debug(f"Нельзя удалить корневой элемент: {item.name}")
                 return
 
         # self.delete_requested.emit(items)
@@ -974,7 +975,7 @@ class FileTableView(QWidget):
     def _on_copy(self) -> None:
         """Копирование."""
         if self._is_mounts_root():
-            print("Копирование запрещено в mounts://")
+            logger.debug("Копирование запрещено в mounts://")
             return
 
         items = self.get_selected_items()
@@ -984,10 +985,8 @@ class FileTableView(QWidget):
 
     def _on_paste(self) -> None:
         """Вставить файлы из буфера."""
-        print(f"DEBUG: _on_paste вызван, буфер содержит {len(self._clipboard_items)} элементов")
 
         if not self._clipboard_items:
-            print("DEBUG: Буфер пуст")
             return
 
         self.paste_requested.emit()
@@ -1044,6 +1043,6 @@ class FileTableView(QWidget):
                                               Qt.TransformationMode.SmoothTransformation)
                 return QIcon(scaled_pixmap)
         except Exception as e:
-            print(f"Не удалось создать миниатюру для {file_path}: {e}")
+            logger.debug(f"Не удалось создать миниатюру для {file_path}: {e}")
 
         return QIcon.fromTheme("image-x-generic")
