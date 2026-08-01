@@ -1591,20 +1591,19 @@ class MainWindow(QMainWindow):
             duration=self._toast_duration
         )
         toast.show_at_bottom_right()
+
     def _on_sync_check(self, items: list) -> None:
-        """Проверка синхронизации выбранных файлов."""
         if not items:
             QMessageBox.information(self, "Инфо", "Выберите файлы для проверки")
             return
 
-        cloud_provider = self._providers.get(Providers.CLOUD)
+        cloud_provider = self._providers.get('cloud')
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
 
         bridge = cloud_provider._bridge
 
-        # Показываем диалог прогресса
         progress = ProgressDialog("Проверка синхронизации", self)
         progress.set_cancellable(False)
         progress.show()
@@ -1615,6 +1614,8 @@ class MainWindow(QMainWindow):
             outdated_count = 0
             not_downloaded_count = 0
 
+            current_items = self.file_table._current_items  # <-- вот здесь получаем полный список
+
             for i, item in enumerate(items):
                 if item.is_dir:
                     continue
@@ -1622,24 +1623,38 @@ class MainWindow(QMainWindow):
                 progress.set_progress(i + 1, total)
                 progress.set_status(f"Проверка: {item.name}", f"{i + 1} из {total}")
 
-                # Проверяем синхронизацию
                 sync_info = bridge.check_file_sync(item.path)
 
-                # Обновляем статус в объекте
+                # Сохраняем хеши в кеш
+                remote_hash = sync_info.get('remote_hash')
+                local_hash = sync_info.get('local_hash')
+                self._folder_cache.save_hashes(item.path, remote_hash, local_hash)
+
                 item.is_downloaded = sync_info.get('is_downloaded', False)
                 item.is_synced = sync_info.get('is_synced', False)
 
-                if sync_info.get('is_synced', False):
+                # Обновляем тот же объект в полном списке current_items
+                for existing in current_items:
+                    if existing.path == item.path:
+                        existing.is_downloaded = item.is_downloaded
+                        existing.is_synced = item.is_synced
+                        break
+
+                if item.is_synced:
                     synced_count += 1
-                elif sync_info.get('is_downloaded', False):
+                elif item.is_downloaded:
                     outdated_count += 1
                 else:
                     not_downloaded_count += 1
 
-            # Обновляем отображение
-            self._on_refresh()
+            # Обновляем отображение всей папки, передавая ПОЛНЫЙ список current_items
+            self.file_table.set_files(
+                current_items,
+                self._current_provider,
+                self._current_provider == self._providers.get('cloud'),
+                path=self._current_path
+            )
 
-            # Показываем результат
             result_msg = (
                 f"Проверка завершена:\n"
                 f"Синхронизировано: {synced_count}\n"
@@ -1649,7 +1664,6 @@ class MainWindow(QMainWindow):
 
             progress.set_status("Проверка завершена", result_msg)
             progress.operation_finished(True)
-
             self.status_bar.showMessage(result_msg)
 
         except Exception as e:
