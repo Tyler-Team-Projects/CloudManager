@@ -87,11 +87,12 @@ class ToastNotification(QWidget):
             self._callback()
 
     def show_at_bottom_right(self):
-        """Показать в правом нижнем углу экрана."""
+        """Показать в правом нижнем углу экрана (кроссплатформенно)."""
         screen = QApplication.primaryScreen()
         if screen:
-            screen_geom = screen.availableGeometry()
-            x = screen_geom.right() - self.width() - 20
-            y = screen_geom.bottom() - self.height() - 40
+            # Используем полную геометрию экрана и резервируем место под панель
+            geom = screen.geometry()
+            x = geom.right() - self.width() - 20
+            y = geom.bottom() - self.height() - 40
             self.move(QPoint(x, y))
         self.show()
