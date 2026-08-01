@@ -4,7 +4,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint
-from PyQt6.QtGui import QCursor
 from core.constants import App, Settings, Timeouts, Providers, Views
 
 
@@ -89,20 +88,17 @@ class ToastNotification(QWidget):
 
     def show_at_bottom_right(self):
         """Показать в правом нижнем углу экрана (кроссплатформенно)."""
-        # Находим экран, на котором сейчас курсор
-        cursor_pos = QCursor.pos()
-        target_screen = None
-        for screen in QApplication.screens():
-            if screen.geometry().contains(cursor_pos):
-                target_screen = screen
-                break
-        if not target_screen:
-            target_screen = QApplication.primaryScreen()
-
-        if target_screen:
-            # Используем geometry() с ручным отступом для панели (40 пикселей)
-            geom = target_screen.geometry()
+        screen = QApplication.primaryScreen()
+        if screen:
+            geom = screen.geometry()
             x = geom.right() - self.width() - 20
             y = geom.bottom() - self.height() - 40
-            self.move(QPoint(x, y))
+            # Перемещаем после показа, чтобы оконный менеджер не переопределил координаты
+            self.move(x, y)
         self.show()
+        # На всякий случай корректируем позицию ещё раз после обработки событий
+        if screen:
+            QTimer.singleShot(0, lambda: self.move(
+                screen.geometry().right() - self.width() - 20,
+                screen.geometry().bottom() - self.height() - 40
+            ))
