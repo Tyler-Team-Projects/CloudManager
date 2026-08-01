@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint
+import sys
 from core.constants import App, Settings, Timeouts, Providers, Views
 
 
@@ -14,11 +15,14 @@ class ToastNotification(QWidget):
                  callback, parent=None, duration: int = Timeouts.TOAST_DEFAULT):
         super().__init__(parent)
         self._callback = callback
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
-        )
+
+        flags = (Qt.WindowType.FramelessWindowHint |
+                 Qt.WindowType.WindowStaysOnTopHint |
+                 Qt.WindowType.Tool)
+        if sys.platform.startswith('linux'):
+            flags |= Qt.WindowType.X11BypassWindowManagerHint
+
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
         self.setStyleSheet("""
@@ -87,18 +91,10 @@ class ToastNotification(QWidget):
             self._callback()
 
     def show_at_bottom_right(self):
-        """Показать в правом нижнем углу экрана (кроссплатформенно)."""
         screen = QApplication.primaryScreen()
         if screen:
             geom = screen.geometry()
             x = geom.right() - self.width() - 20
             y = geom.bottom() - self.height() - 40
-            # Перемещаем после показа, чтобы оконный менеджер не переопределил координаты
-            self.move(x, y)
+            self.move(QPoint(x, y))
         self.show()
-        # На всякий случай корректируем позицию ещё раз после обработки событий
-        if screen:
-            QTimer.singleShot(0, lambda: self.move(
-                screen.geometry().right() - self.width() - 20,
-                screen.geometry().bottom() - self.height() - 40
-            ))
