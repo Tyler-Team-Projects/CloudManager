@@ -17,6 +17,7 @@ from core.local.local_provider import LocalFileSystemProvider
 from api.common.models import CloudFile
 from api.common.base_provider import BaseCloudProvider
 from core.logger import get_logger
+from core.constants import Providers, Views
 
 logger = get_logger('file_table')
 
@@ -932,8 +933,8 @@ class FileTableView(QWidget):
         """Проверить, является ли элемент корневым диском."""
         # Корневые элементы имеют специальные имена или пути
         root_names = ["Домашняя папка", "Корень (/)", "/home"]
-        root_paths = ["mounts://", "/"]
-        if file_item.path == "mounts://":
+        root_paths = [Providers.MOUNTS_ROOT, "/"]
+        if file_item.path == Providers.MOUNTS_ROOT:
             return True
         if file_item.name in root_names:
             return True
@@ -949,8 +950,7 @@ class FileTableView(QWidget):
 
     def _is_mounts_root(self) -> bool:
         """Проверить, находимся ли в корне mounts://."""
-        return self._current_display_path == "mounts://"
-
+        return self._current_display_path == Providers.MOUNTS_ROOT
     def keyPressEvent(self, event) -> None:
         """Обработка нажатий клавиш."""
         if event.key() == Qt.Key.Key_Delete:

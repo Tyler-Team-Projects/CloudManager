@@ -4,20 +4,25 @@ from PyQt6.QtWidgets import (
     QHBoxLayout, QApplication
 )
 from PyQt6.QtCore import Qt, QTimer, QPoint
+import sys
+from core.constants import App, Settings, Timeouts, Providers, Views
 
 
 class ToastNotification(QWidget):
     """Всплывающее окно в правом нижнем углу экрана."""
 
     def __init__(self, title: str, message: str, button_text: str,
-                 callback, parent=None, duration: int = 10000):
+                 callback, parent=None, duration: int = Timeouts.TOAST_DEFAULT):
         super().__init__(parent)
         self._callback = callback
-        self.setWindowFlags(
-            Qt.WindowType.FramelessWindowHint |
-            Qt.WindowType.WindowStaysOnTopHint |
-            Qt.WindowType.Tool
-        )
+
+        flags = (Qt.WindowType.FramelessWindowHint |
+                 Qt.WindowType.WindowStaysOnTopHint |
+                 Qt.WindowType.Tool)
+        if sys.platform.startswith('linux'):
+            flags |= Qt.WindowType.X11BypassWindowManagerHint
+
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
 
         self.setStyleSheet("""
@@ -86,11 +91,10 @@ class ToastNotification(QWidget):
             self._callback()
 
     def show_at_bottom_right(self):
-        """Показать в правом нижнем углу экрана."""
         screen = QApplication.primaryScreen()
         if screen:
-            screen_geom = screen.availableGeometry()
-            x = screen_geom.right() - self.width() - 20
-            y = screen_geom.bottom() - self.height() - 40
+            geom = screen.geometry()
+            x = geom.right() - self.width() - 20
+            y = geom.bottom() - self.height() - 40
             self.move(QPoint(x, y))
         self.show()

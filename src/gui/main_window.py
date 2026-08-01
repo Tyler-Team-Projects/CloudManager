@@ -30,6 +30,7 @@ from core.local.local_provider import LocalFileSystemProvider
 from core.local.cloud_bridge import CloudBridge
 from core.local.cloud_provider_adapter import CloudProviderAdapter
 from core.cache_manager import FolderCache
+from core.constants import App, Settings, Timeouts, Providers, Views, Auth, CloseBehavior
 
 from .views.side_bar import SideBar
 from .views.file_table import FileTableView
@@ -116,16 +117,16 @@ class MainWindow(QMainWindow):
         self._copy_dest_provider = None  # текущий провайдер (для вставки)
 
         self._start_minimized = (
-                QSettings("TeamTyler", "DiscoHack").value("autostart", False, type=bool)
+                QSettings(App.ORGANIZATION, App.NAME).value(Settings.AUTOSTART, False, type=bool)
                 and '--minimized' in sys.argv
         )
         if self._start_minimized:
             self.hide()
         # Начальная загрузка
-        self._navigate_to_provider('local', self._providers['local'].get_mounts_root())
+        self._navigate_to_provider(Providers.LOCAL, self._providers[Providers.LOCAL].get_mounts_root())
 
         #Начальные настройки
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
         default_view = settings.value("default_view_mode", "icons")
         if default_view == "table":
             self._toggle_view(True)
@@ -134,24 +135,24 @@ class MainWindow(QMainWindow):
 
         #Скрытые файлы
         show_hidden = settings.value("show_hidden_files", False, type = bool)
-        local_provider = self._providers.get('local')
+        local_provider = self._providers.get(Providers.LOCAL)
         if local_provider and hasattr(local_provider, "set_show_hidden"):
             local_provider.set_show_hidden(show_hidden)
 
         #Папка для скачивания по умолчанию
         download_folder = settings.value("download_folder", "")
         if download_folder:
-            cloud_provider = self._providers.get('cloud')
+            cloud_provider = self._providers.get(Providers.CLOUD)
             if cloud_provider and hasattr(cloud_provider, "_bridge"):
                 cloud_provider._bridge.set_download_path(Path(download_folder))
 
         #Длительность уведомлений
-        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
+        self._toast_duration = int(settings.value(Settings.TOAST_DURATION, 10)) * 1000
 
         #Синхронизация
-        sync_enabled = settings.value("sync_enabled", True, type=bool)
-        sync_interval = settings.value("sync_interval", 30, type=int)
-        cloud_provider = self._providers.get('cloud')
+        sync_enabled = settings.value(Settings.SYNC_ENABLED, True, type=bool)
+        sync_interval = settings.value(Settings.SYNC_INTERVAL, 30, type=int)
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
             bridge = cloud_provider._bridge
             if sync_enabled and bridge.has_token():
@@ -164,13 +165,13 @@ class MainWindow(QMainWindow):
         # Обновляем текущее представление, чтобы применить фильтры/режим
         self._load_directory(self._current_path)
 
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
             if cloud_provider._bridge.has_token() and cloud_provider._bridge._sync_watcher:
                 cloud_provider._bridge._sync_watcher.refresh_callback = self._on_sync_refresh
     def _init_providers(self) -> None:
         """Инициализация провайдеров."""
-        self._providers['local'] = LocalFileSystemProvider()
+        self._providers[Providers.LOCAL] = LocalFileSystemProvider()
 
         cloud_path = Path.home() / 'YandexDisk'
         cloud_path.mkdir(parents=True, exist_ok=True)
@@ -183,7 +184,7 @@ class MainWindow(QMainWindow):
             # Сохраняем callback для later
             self._pending_sync_callback = True
 
-        self._providers['cloud'] = cloud_adapter
+        self._providers[Providers.CLOUD] = cloud_adapter
 
 
     def _setup_ui(self) -> None:
@@ -418,14 +419,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Обработка закрытия окна (крестик)."""
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
         behavior = settings.value("close_behavior", "ask")
 
         if hasattr(self, '_hash_worker') and self._hash_worker.isRunning():
             self._hash_worker.requestInterruption()
             self._hash_worker.wait(1000)
 
-        if behavior == "tray":
+        if behavior == CloseBehavior.TRAY:
             if self._tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
                 self.hide()
                 self._tray_icon.show()
@@ -436,7 +437,7 @@ class MainWindow(QMainWindow):
                 self._exit_app()
                 event.accept()
                 return
-        elif behavior == "exit":
+        elif behavior == CloseBehavior.EXIT:
             self._exit_app()
             event.accept()
             return
@@ -468,7 +469,7 @@ class MainWindow(QMainWindow):
 
     def _apply_settings(self):
         """Применить все настройки из QSettings к текущему состоянию."""
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
 
         # Режим отображения по умолчанию
         default_view = settings.value("default_view_mode", "icons")
@@ -479,24 +480,24 @@ class MainWindow(QMainWindow):
 
         # Показ скрытых файлов
         show_hidden = settings.value("show_hidden_files", False, type=bool)
-        local_provider = self._providers.get('local')
+        local_provider = self._providers.get(Providers.LOCAL)
         if local_provider and hasattr(local_provider, 'set_show_hidden'):
             local_provider.set_show_hidden(show_hidden)
 
         # Папка для скачивания
-        download_folder = settings.value("download_folder", "")
+        download_folder = settings.value(Settings.DOWNLOAD_FOLDER, "")
         if download_folder:
-            cloud_provider = self._providers.get('cloud')
+            cloud_provider = self._providers.get(Providers.CLOUD)
             if cloud_provider and hasattr(cloud_provider, '_bridge'):
                 cloud_provider._bridge.set_download_path(Path(download_folder))
 
         # Длительность уведомлений
-        self._toast_duration = int(settings.value("toast_duration", 10)) * 1000
+        self._toast_duration = int(settings.value(Settings.TOAST_DURATION, 10)) * 1000
 
         # Фоновая синхронизация
         sync_enabled = settings.value("sync_enabled", True, type=bool)
         sync_interval = settings.value("sync_interval", 30, type=int)
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
             bridge = cloud_provider._bridge
             if sync_enabled and bridge.has_token():
@@ -511,12 +512,14 @@ class MainWindow(QMainWindow):
         self._update_sync_status()
 
         # Обновляем текущее представление
-        directory = self._load_directory(self._current_path)
+        hidden_changed = (local_provider and local_provider._show_hidden != show_hidden)
+        if hidden_changed:
+            self._load_directory(self._current_path)
 
     def _is_network_available(self) -> bool:
         try:
             import requests
-            requests.head('https://cloud-api.yandex.net', timeout=2)
+            requests.head('https://cloud-api.yandex.net', timeout=Timeouts.NETWORK_CHECK)
             return True
         except Exception:
             return False
@@ -534,7 +537,7 @@ class MainWindow(QMainWindow):
             self.toggle_view_btn.setIcon(QIcon.fromTheme("view-list-details"))
             self.toggle_view_btn.setText("Вид таблицей")
 
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
         settings.setValue("default_view_mode", "table" if checked else "icons")
 
     def _setup_statusbar(self) -> None:
@@ -602,7 +605,7 @@ class MainWindow(QMainWindow):
         if not self._current_provider:
             return
 
-        provider_type = 'local' if hasattr(self._current_provider, 'get_mounts_root') else 'cloud'
+        provider_type = Providers.LOCAL if hasattr(self._current_provider, 'get_mounts_root') else Providers.CLOUD
 
         # 1. Загрузка кеша
         cached_files = self._folder_cache.load(path, provider_type)
@@ -613,7 +616,7 @@ class MainWindow(QMainWindow):
         if cached_files is not None:
             self._on_directory_loaded(cached_files, from_cache=True)
             # Если локальная папка не изменилась — выходим без воркера
-            if provider_type == 'local' and not force_refresh:
+            if provider_type == Providers.LOCAL and not force_refresh:
                 try:
                     if abs(os.path.getmtime(path) - self._folder_cache.get_mtime(path)) < 1:
                         self.status_bar.showMessage("Готово")
@@ -627,7 +630,7 @@ class MainWindow(QMainWindow):
         if self._list_worker and self._list_worker.isRunning() and getattr(self._list_worker, 'path', '') == path:
             return
 
-        if provider_type == 'cloud' and not self._is_network_available():
+        if provider_type == Providers.CLOUD and not self._is_network_available():
             self._switch_to_local("Нет подключения – работа с локальными дисками")
             return
 
@@ -644,17 +647,17 @@ class MainWindow(QMainWindow):
         def on_finished(files):
             if self._current_path != path:
                 return
-            provider_type = 'local' if hasattr(self._current_provider, 'get_mounts_root') else 'cloud'
+            provider_type = Providers.LOCAL if hasattr(self._current_provider, 'get_mounts_root') else Providers.CLOUD
             self._folder_cache.save(path, provider_type, files)
 
             #print(f"[CACHE] Saved to cache: {len(files)} items for {path}")
 
-            if provider_type == 'cloud' and files:
+            if provider_type == Providers.CLOUD and files:
                 # Остановить предыдущий воркер, если ещё работает
                 if hasattr(self, '_hash_worker') and self._hash_worker.isRunning():
                     self._hash_worker.requestInterruption()
                     self._hash_worker.wait(500)
-                cloud_provider = self._providers.get('cloud')
+                cloud_provider = self._providers.get(Providers.CLOUD)
                 if cloud_provider and hasattr(cloud_provider, '_bridge'):
                     self._hash_worker = HashUpdateWorker(
                         cloud_provider._bridge,
@@ -682,7 +685,7 @@ class MainWindow(QMainWindow):
 
     def _switch_to_local(self, message: str = ""):
         """Переключиться на локальные диски, если мы ещё не на них."""
-        local_provider = self._providers.get('local')
+        local_provider = self._providers.get(Providers.LOCAL)
         if local_provider and self._current_provider == local_provider:
             return  # уже на локальных дисках
         if local_provider:
@@ -691,7 +694,7 @@ class MainWindow(QMainWindow):
             self._load_directory(self._current_path)
             self.address_bar.set_path(self._current_path)
         # Останавливаем синхронизацию и таймер диска
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
             cloud_provider._bridge.stop_sync()
         self._stop_disk_info_timer()
@@ -702,7 +705,7 @@ class MainWindow(QMainWindow):
         """Запускает фоновое обновление хешей для текущей облачной папки."""
         if not self._current_provider or not self._is_current_cloud:
             return
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             return
         bridge = cloud_provider._bridge
@@ -717,7 +720,7 @@ class MainWindow(QMainWindow):
     def _on_directory_loaded(self, files: list, from_cache: bool = False) -> None:
         self._is_current_cloud = False
 
-        if self._current_provider == self._providers.get('cloud'):
+        if self._current_provider == self._providers.get(Providers.CLOUD):
             self._is_current_cloud = True
             cloud_provider = self._current_provider
             if hasattr(cloud_provider, '_bridge'):
@@ -739,10 +742,10 @@ class MainWindow(QMainWindow):
             self.disk_info_widget.setVisible(True)
             self.disk_label.setVisible(True)
             self.disk_progress.setVisible(True)
-            self._update_disk_info()
-            self._start_disk_info_timer()
+            QTimer.singleShot(0, self._update_disk_info)
+            QTimer.singleShot(0, self._start_disk_info_timer)
         else:
-            self._stop_disk_info_timer()
+            QTimer.singleShot(0, self._stop_disk_info_timer)
             self.disk_info_widget.setVisible(False)
             self.disk_label.setVisible(False)
             self.disk_progress.setVisible(False)
@@ -769,7 +772,7 @@ class MainWindow(QMainWindow):
 
     def _on_public_link(self, remote_path: str):
         """Показать диалог управления публичной ссылкой."""
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             QMessageBox.warning(self, "Ошибка", "Облачное хранилище недоступно.")
             return
@@ -792,11 +795,11 @@ class MainWindow(QMainWindow):
         if not items:
             return
 
-        if self._is_local_provider() or self._current_path == "mounts://":
+        if self._is_local_provider() or self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Функция доступна только для файлов на Яндекс.Диске")
             return
 
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
@@ -852,7 +855,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(
                     f"Сохранение прервано. 0 из {self._save_as_total} файлов"
                 )
-            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
+            QTimer.singleShot(Timeouts.TOAST_DURATION, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
         file_item, local_path = self._save_as_queue.pop(0)
@@ -912,7 +915,7 @@ class MainWindow(QMainWindow):
             self._save_as_success += 1
             # Сохраняем метаданные
             if os.path.exists(local_path):
-                cloud_provider = self._providers.get('cloud')
+                cloud_provider = self._providers.get(Providers.CLOUD)
                 if cloud_provider and hasattr(cloud_provider, '_bridge'):
                     bridge = cloud_provider._bridge
                     bridge.download_metadata[local_path] = {
@@ -952,7 +955,7 @@ class MainWindow(QMainWindow):
             "Сохранение завершено",
             msg,
             "Открыть папку",
-            callback=lambda: self._navigate_to_provider('local', save_path),
+            callback=lambda: self._navigate_to_provider(Providers.LOCAL, save_path),
             parent=self,
             duration=self._toast_duration
         )
@@ -975,7 +978,7 @@ class MainWindow(QMainWindow):
 
     def _update_toolbar_buttons(self) -> None:
         """Обновление состояния кнопок тулбара."""
-        is_root = self._current_path == "mounts://"
+        is_root = self._current_path == Providers.MOUNTS_ROOT
         is_local = self._is_local_provider()
 
         # На локальном диске нельзя скачивать и загружать
@@ -1104,7 +1107,7 @@ class MainWindow(QMainWindow):
         dest_dir = self._current_path
         if dest_dir.startswith("file://"):
             dest_dir = dest_dir.replace("file://", "")
-        if dest_dir == "mounts://":
+        if dest_dir == Providers.MOUNTS_ROOT:
             dest_dir = str(Path.home())
 
         dest_path = Path(dest_dir)
@@ -1155,7 +1158,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Загрузка доступна только в облачной папке")
             return
 
-        if self._current_path == "mounts://":
+        if self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
             return
 
@@ -1174,12 +1177,12 @@ class MainWindow(QMainWindow):
             return
 
         # локальная папка - копируем файлы
-        if self._is_local_provider() or self._current_path == "mounts://":
+        if self._is_local_provider() or self._current_path == Providers.MOUNTS_ROOT:
             self._copy_local_files(files)
             return
 
         # облако - загружаем на Яндекс.Диск
-        if self._current_path == "mounts://":
+        if self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Загрузка запрещена в корневой директории")
             return
 
@@ -1219,7 +1222,7 @@ class MainWindow(QMainWindow):
                 f"Загружено {self._upload_success} из {self._upload_total} файлов"
             )
             self._notify_upload_complete()
-            QTimer.singleShot(10000, self._finish_upload)
+            QTimer.singleShot(Timeouts.TOAST_DURATION, self._finish_upload)
             return
 
         local_path = self._upload_queue[0]
@@ -1248,7 +1251,7 @@ class MainWindow(QMainWindow):
             )
             self._on_refresh()
             self._notify_update_complete()
-            QTimer.singleShot(10000, self.status_bar.clearMessage)
+            QTimer.singleShot(Timeouts.TOAST_DURATION, self.status_bar.clearMessage)
             return
 
         file_item = self._update_queue[0]
@@ -1361,7 +1364,7 @@ class MainWindow(QMainWindow):
 
             if success:
                 self._update_success += 1
-                cloud_provider = self._providers.get('cloud')
+                cloud_provider = self._providers.get(Providers.CLOUD)
                 if cloud_provider and hasattr(cloud_provider, '_bridge'):
                     bridge = cloud_provider._bridge
                     sync_info = bridge.check_file_sync(remote_path)
@@ -1411,7 +1414,7 @@ class MainWindow(QMainWindow):
 
     def _on_download(self) -> None:
         """Скачивание выбранных файлов с подтверждением при конфликтах."""
-        if self._current_path == "mounts://":
+        if self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Скачивание запрещено в корневой директории")
             return
 
@@ -1427,7 +1430,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Инфо", "Выберите файлы для скачивания")
             return
 
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
@@ -1485,7 +1488,7 @@ class MainWindow(QMainWindow):
                 self.status_bar.showMessage(
                     f"Скачивание прервано. 0 из {self._download_total} файлов"
                 )
-            QTimer.singleShot(10000, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
+            QTimer.singleShot(Timeouts.TOAST_DURATION, lambda: (self._on_refresh(), self.status_bar.clearMessage()))
             return
 
         file_item, local_path = self._download_queue.pop(0)
@@ -1530,7 +1533,7 @@ class MainWindow(QMainWindow):
             # Сохраняем метаданные о скачанном файле
             if os.path.exists(local_path):
                 from datetime import datetime
-                cloud_provider = self._providers.get('cloud')
+                cloud_provider = self._providers.get(Providers.CLOUD)
                 if cloud_provider and hasattr(cloud_provider, '_bridge'):
                     bridge = cloud_provider._bridge
                     bridge.download_metadata[local_path] = {
@@ -1588,8 +1591,8 @@ class MainWindow(QMainWindow):
             duration=self._toast_duration
         )
         toast.show_at_bottom_right()
+
     def _on_sync_check(self, items: list) -> None:
-        """Проверка синхронизации выбранных файлов."""
         if not items:
             QMessageBox.information(self, "Инфо", "Выберите файлы для проверки")
             return
@@ -1601,7 +1604,6 @@ class MainWindow(QMainWindow):
 
         bridge = cloud_provider._bridge
 
-        # Показываем диалог прогресса
         progress = ProgressDialog("Проверка синхронизации", self)
         progress.set_cancellable(False)
         progress.show()
@@ -1612,6 +1614,8 @@ class MainWindow(QMainWindow):
             outdated_count = 0
             not_downloaded_count = 0
 
+            current_items = self.file_table._current_items  # <-- вот здесь получаем полный список
+
             for i, item in enumerate(items):
                 if item.is_dir:
                     continue
@@ -1619,24 +1623,38 @@ class MainWindow(QMainWindow):
                 progress.set_progress(i + 1, total)
                 progress.set_status(f"Проверка: {item.name}", f"{i + 1} из {total}")
 
-                # Проверяем синхронизацию
                 sync_info = bridge.check_file_sync(item.path)
 
-                # Обновляем статус в объекте
+                # Сохраняем хеши в кеш
+                remote_hash = sync_info.get('remote_hash')
+                local_hash = sync_info.get('local_hash')
+                self._folder_cache.save_hashes(item.path, remote_hash, local_hash)
+
                 item.is_downloaded = sync_info.get('is_downloaded', False)
                 item.is_synced = sync_info.get('is_synced', False)
 
-                if sync_info.get('is_synced', False):
+                # Обновляем тот же объект в полном списке current_items
+                for existing in current_items:
+                    if existing.path == item.path:
+                        existing.is_downloaded = item.is_downloaded
+                        existing.is_synced = item.is_synced
+                        break
+
+                if item.is_synced:
                     synced_count += 1
-                elif sync_info.get('is_downloaded', False):
+                elif item.is_downloaded:
                     outdated_count += 1
                 else:
                     not_downloaded_count += 1
 
-            # Обновляем отображение
-            self._on_refresh()
+            # Обновляем отображение всей папки, передавая ПОЛНЫЙ список current_items
+            self.file_table.set_files(
+                current_items,
+                self._current_provider,
+                self._current_provider == self._providers.get('cloud'),
+                path=self._current_path
+            )
 
-            # Показываем результат
             result_msg = (
                 f"Проверка завершена:\n"
                 f"Синхронизировано: {synced_count}\n"
@@ -1646,7 +1664,6 @@ class MainWindow(QMainWindow):
 
             progress.set_status("Проверка завершена", result_msg)
             progress.operation_finished(True)
-
             self.status_bar.showMessage(result_msg)
 
         except Exception as e:
@@ -1659,7 +1676,7 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        if self._current_path == "mounts://":
+        if self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Обновление запрещено в корневой директории")
             return
 
@@ -1667,7 +1684,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Обновление доступно только в облачной папке")
             return
 
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             QMessageBox.warning(self, "Ошибка", "Облачный провайдер не доступен")
             return
@@ -1701,7 +1718,7 @@ class MainWindow(QMainWindow):
         """Асинхронное удаление выбранных файлов."""
         self._operation_in_progress = True
         if items is None or isinstance(items, bool):
-            if self._current_path == "mounts://":
+            if self._current_path == Providers.MOUNTS_ROOT:
                 QMessageBox.warning(self, "Ошибка", "Удаление запрещено в корневой директории")
                 return
             items = self.file_table.get_selected_items()
@@ -1714,7 +1731,7 @@ class MainWindow(QMainWindow):
             return
 
         for item in items:
-            if item.path == "mounts://" or item.name in ["Домашняя папка", "Корень (/)", "/home"]:
+            if item.path == Providers.MOUNTS_ROOT or item.name in ["Домашняя папка", "Корень (/)", "/home"]:
                 QMessageBox.warning(self, "Ошибка", f"Нельзя удалить системный элемент: {item.name}")
                 return
 
@@ -1749,7 +1766,7 @@ class MainWindow(QMainWindow):
                 )
             )
             # Через 10 секунд очищаем статус-бар
-            QTimer.singleShot(10000, self.status_bar.clearMessage)
+            QTimer.singleShot(Timeouts.TOAST_DURATION, self.status_bar.clearMessage)
             return
 
         file_item = self._delete_queue.pop(0)
@@ -1785,13 +1802,36 @@ class MainWindow(QMainWindow):
         self._update_disk_info()
 
     def _open_file(self, file_item: CloudFile) -> None:
-        """Открытие файла."""
         if self._is_current_cloud and not self._is_network_available():
             QMessageBox.warning(self, "Нет сети", "Нет подключения к интернету")
             return
         if hasattr(self._current_provider, 'open_file'):
             success = self._current_provider.open_file(file_item.path)
-            if not success:
+            if success:
+                # Обновить статус скачанного файла в текущем списке
+                if self._is_current_cloud and not file_item.is_dir:
+                    file_item.is_downloaded = True
+                    # Проверить синхронизацию (можно быстро сравнить размер, без хеша)
+                    cloud_provider = self._providers.get('cloud')
+                    if cloud_provider and hasattr(cloud_provider, '_bridge'):
+                        bridge = cloud_provider._bridge
+                        local_file = bridge.downloads_path / file_item.name
+                        if local_file.exists():
+                            # Сравниваем размеры, если совпадают – считаем синхронизированным
+                            if local_file.stat().st_size == file_item.size:
+                                file_item.is_synced = True
+                            else:
+                                file_item.is_synced = False
+                        else:
+                            file_item.is_synced = False
+                    # Обновить отображение этого файла в таблице и иконках
+                    self.file_table.set_files(
+                        self.file_table._current_items,
+                        self._current_provider,
+                        self._is_current_cloud,
+                        path=self._current_path
+                    )
+            else:
                 QMessageBox.warning(self, "Ошибка", f"Не удалось открыть {file_item.name}")
         else:
             QMessageBox.information(self, "Инфо", f"Открытие: {file_item.name}")
@@ -1820,7 +1860,7 @@ class MainWindow(QMainWindow):
             self._search_results = results
             self._pre_search_path = self._current_path
 
-            is_cloud = (self._current_provider == self._providers.get('cloud'))
+            is_cloud = (self._current_provider == self._providers.get(Providers.CLOUD))
             self.file_table.set_files(results, self._current_provider, is_cloud, path=self._current_path)
             self.items_label.setText(f"Найдено: {len(results)}")
             self.status_bar.showMessage(f"Найдено {len(results)} элементов")
@@ -1852,7 +1892,7 @@ class MainWindow(QMainWindow):
                 AuthManager.save_token(token)
                 self._update_disk_info()
                 self._start_disk_info_timer()
-                cloud_provider = self._providers.get('cloud')
+                cloud_provider = self._providers.get(Providers.CLOUD)
                 if cloud_provider and hasattr(cloud_provider, 'setup_token'):
                     # Передаём callback для обновления
                     cloud_provider.setup_token(token, self._on_sync_refresh)
@@ -1868,14 +1908,14 @@ class MainWindow(QMainWindow):
         # Обновляем только если сейчас в облаке
         if self._operation_in_progress:
             return
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if self._current_provider == cloud_provider and self._current_path:
             # Используем тот же механизм, что и кнопка обновления
             self._load_directory(self._current_path)
 
     def _update_sync_status(self) -> None:
         """Обновление индикатора синхронизации."""
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if cloud_provider and hasattr(cloud_provider, '_bridge'):
             if cloud_provider._bridge.is_sync_running():
                 self.sync_label.setText("Синхр: вкл")
@@ -1891,7 +1931,7 @@ class MainWindow(QMainWindow):
         """Обновить информацию о занятом месте на Яндекс.Диске."""
         if self._is_current_cloud and not self._is_network_available():
             return
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
 
         if not self._is_current_cloud or not cloud_provider:
             self.disk_info_widget.setVisible(False)
@@ -1953,7 +1993,7 @@ class MainWindow(QMainWindow):
         if self._disk_info_timer is None:
             self._disk_info_timer = QTimer()
             self._disk_info_timer.timeout.connect(self._refresh_disk_cache)
-            self._disk_info_timer.start(30000)  # 30 секунд
+            self._disk_info_timer.start(Timeouts.DISK_INFO_INTERVAL)  # 30 секунд
 
     def _stop_disk_info_timer(self) -> None:
         """Остановить таймер обновления информации о диске."""
@@ -2017,7 +2057,7 @@ class MainWindow(QMainWindow):
             (is_enough: bool, free_space: int, message: str)
         """
         # Получаем актуальные данные (свежий запрос)
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         if not cloud_provider or not hasattr(cloud_provider, '_bridge'):
             return (False, 0, "Облачный провайдер не доступен")
 
@@ -2054,7 +2094,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'status_action'):
             return
 
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         is_authorized = False
 
         if cloud_provider and hasattr(cloud_provider, 'has_token'):
@@ -2079,7 +2119,7 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            cloud_provider = self._providers.get('cloud')
+            cloud_provider = self._providers.get(Providers.CLOUD)
             self._stop_disk_info_timer()
             self._update_disk_info()
 
@@ -2093,7 +2133,7 @@ class MainWindow(QMainWindow):
             # Удаляем токен из keyring
             try:
                 import keyring
-                keyring.delete_password("DiscoHack", "yandex_token")
+                keyring.delete_password(App.NAME, Auth.TOKEN_KEY)
             except Exception as e:
                 logger.error(f"Ошибка удаления из keyring: {e}")
 
@@ -2113,7 +2153,7 @@ class MainWindow(QMainWindow):
 
             # Если сейчас в облаке, переключаемся на локальные диски
             if self._current_provider == cloud_provider:
-                local_provider = self._providers.get('local')
+                local_provider = self._providers.get(Providers.LOCAL)
                 if local_provider:
                     self._current_provider = local_provider
                     self._current_path = local_provider.get_root_path()
@@ -2125,9 +2165,9 @@ class MainWindow(QMainWindow):
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
         settings.sync()
-        return settings.value("show_notifications", True, type=bool)
+        return settings.value(Settings.NOTIFICATIONS, True, type=bool)
 
     def _notify_upload_complete(self):
         """Уведомление о завершении загрузки на диск."""
@@ -2139,7 +2179,7 @@ class MainWindow(QMainWindow):
             "Загрузка завершена",
             msg,
             "Открыть папку в облаке",
-            callback=lambda: self._navigate_to_provider('cloud', dest_path),
+            callback=lambda: self._navigate_to_provider(Providers.CLOUD, dest_path),
             parent=self,
             duration=self._toast_duration
         )
@@ -2149,7 +2189,7 @@ class MainWindow(QMainWindow):
     def _on_file_rename(self, file_item, new_name: str) -> None:
         """Переименование файла/папки."""
         # Защита: нельзя переименовывать в mounts://
-        if self._current_path == "mounts://":
+        if self._current_path == Providers.MOUNTS_ROOT:
             QMessageBox.warning(self, "Ошибка", "Переименование запрещено в корневой директории")
             return
 
@@ -2312,9 +2352,9 @@ class MainWindow(QMainWindow):
 
     def _can_show_notifications(self) -> bool:
         """Проверяет, разрешены ли уведомления."""
-        settings = QSettings("TeamTyler", "DiscoHack")
+        settings = QSettings(App.ORGANIZATION, App.NAME)
         settings.sync()
-        return settings.value("show_notifications", True, type=bool)
+        return settings.value(Settings.NOTIFICATIONS, True, type=bool)
 
     def _notify_download_complete(self):
         """Уведомление о завершении скачивания."""
@@ -2326,7 +2366,7 @@ class MainWindow(QMainWindow):
             "Скачивание завершено",
             msg,
             "Открыть папку Downloads",
-            callback=lambda: self._navigate_to_provider('local', downloads_path),
+            callback=lambda: self._navigate_to_provider(Providers.LOCAL, downloads_path),
             parent=self,
             duration=self._toast_duration
         )
@@ -2335,7 +2375,7 @@ class MainWindow(QMainWindow):
         """Проверить, является ли текущий провайдер локальным."""
         if not self._current_provider:
             return False
-        cloud_provider = self._providers.get('cloud')
+        cloud_provider = self._providers.get(Providers.CLOUD)
         return self._current_provider != cloud_provider
 
     def _update_menu_buttons(self) -> None:

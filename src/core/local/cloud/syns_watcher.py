@@ -7,6 +7,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from core.cache_manager import FolderCache
 from core.logger import get_logger
+from core.constants import App, Settings, Timeouts, Providers, Views
 
 logger = get_logger('syns_watcher')
 
@@ -84,34 +85,13 @@ class SyncWatcher:
         self.running = False
         self.cloud_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self.check_interval = 30
         self.hash_update_callback = hash_update_callback
+        self.check_interval = Timeouts.SYNC_DEFAULT
+
 
     def set_interval(self, seconds: int):
         """Изменить интервал проверки облака."""
         self.check_interval = seconds
-
-    def _check_cloud_loop(self):
-        while not self._stop_event.is_set():
-            time.sleep(self.check_interval)
-            if not self.cloud_bridge.has_token():
-                continue
-            try:
-                result = self.cloud_bridge.sync_cloud_to_local("/")
-                # if result.get('new'):
-                #     print(f"[SYNC] New files: {result['new']}")
-                # if result.get('updated'):
-                #     print(f"[SYNC] Updated files: {result['updated']}")
-
-                # Если есть изменения - вызываем callback для обновления GUI
-                if (result.get('new') or result.get('updated')) and self.refresh_callback:
-                    self.refresh_callback()
-                    # Запускаем фоновое обновление хешей, если callback задан
-                    if self.hash_update_callback:
-                        self.hash_update_callback()
-            except Exception as e:
-                logger.error(f"[SYNC] Cloud check error: {e}")
-                time.sleep(10)
 
     def start_background(self):
         """Запуск фоновой синхронизации."""
@@ -156,7 +136,7 @@ class SyncWatcher:
             folders = [item for item in root_items if item.is_dir]
             for folder in folders:
                 sub_items = self.cloud_bridge.provider.list_files(folder.path)
-                cache.save(folder.path, 'cloud', sub_items)
+                cache.save(folder.path, Providers.CLOUD, sub_items)
                 logger.debug(f"[SYNC] Preloaded {len(sub_items)} items into cache for {folder.path}")
         except Exception as e:
             logger.error(f"[SYNC] Preload error: {e}")
@@ -173,8 +153,9 @@ class SyncWatcher:
                 result = self.cloud_bridge.sync_cloud_to_local("/")
                 # Раз в 5 минут предзагружаем подпапки
                 now = time.time()
-                if now - last_preload > 300:
+                if now - last_preload > Timeouts.PRELOAD:
                     self._preload_subfolders()
                     last_preload = now
             except Exception as e:
                 logger.error(f"[SYNC] Cloud check error: {e}")
+                time.sleep(Timeouts.SYNC_RETRY_DELAY)
